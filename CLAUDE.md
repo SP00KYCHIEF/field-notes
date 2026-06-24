@@ -15,14 +15,15 @@ FIELD_NOTES_MODEL=claude-sonnet-4-6 node server.js   # pin a model (default: cla
 CLAUDE_BIN=/full/path/to/claude node server.js # if `claude` isn't auto-found
 ```
 
-There is **no build step, no test suite, no linter, and no `node_modules`** — this is a deliberately zero-dependency app (Node standard library only). "Develop" = edit `server.js` / `index.html` and restart the server. The HTML is served `no-cache`, so a browser refresh picks up frontend edits without a restart; **server-side changes require restarting `node server.js`**.
+There is **no build step, no test suite, no linter, and no install step** — the app runs straight from a clone with `node server.js`. The **server** is zero-dependency (Node standard library only, no `node_modules`); the **frontend** may use vendored, self-hosted libraries (see Dependencies below). "Develop" = edit `server.js` / `index.html` and restart the server. The HTML is served `no-cache`, so a browser refresh picks up frontend edits without a restart; **server-side changes require restarting `node server.js`**.
 
 ## Hard constraints (do not break these)
 
 These invariants define the project; preserve them unless explicitly asked otherwise:
 
-- **Zero dependencies.** `server.js` may only `require` Node built-ins (`http`, `fs`, `path`, `child_process`, `crypto`). Never add a package or introduce `package.json`/`node_modules`.
-- **One-file frontend.** The entire UI is `index.html` in vanilla JS/CSS — no framework, no bundler, no import of external scripts at runtime (fonts are self-hosted under `fonts/`).
+- **Server stays zero-dependency.** `server.js` uses only Node built-ins (`http`, `fs`, `path`, `child_process`, `crypto`). Don't add npm packages or a `node_modules`/`package.json` to the server — it must keep running from a bare clone.
+- **Dependencies: pragmatic, vendored, self-hosted.** Good libraries that make the app better are welcome — don't reinvent the wheel. The bar: **vendor** them as a self-hosted file under `lib/` (committed, served by the `/lib/` route), **no CDN**, **no build step**, so a clone still runs fully offline with just `node server.js`. (First example: Fabric.js for the board editor.) A full npm/bundler toolchain is a bigger, separate decision — raise it rather than assume it.
+- **App code lives in `index.html`.** Our own UI/logic stays in the single `index.html` (vanilla JS/CSS, fonts self-hosted under `fonts/`); `lib/` holds only third-party vendored code, not our code.
 - **macOS-only by design.** Image work shells out to built-in `sips` (HEIC→JPEG + downscale) and `mdls` (EXIF fallback). ImageMagick (`magick`/`convert`) is an *optional* enhancement for palette + perceptual hash; code must degrade gracefully when it's absent (see the `MAGICK_BIN === ""` paths).
 - **Persistence is plain files.** Metadata in `library.json` (human-readable, hand-editable), full-res originals in `library/`. No database, no localStorage. The data model in `library.json` *is* the UI model — a record's fields render directly.
 
@@ -62,8 +63,8 @@ A fresh clone has no `library.json`; on first run the server seeds it from `samp
 
 Defaults so you can act without checking in:
 
-- **Just do it within the constraints above.** Don't ask permission for routine work that respects the zero-dependency / one-file / files-as-database / macOS invariants. Stop and ask only when a request would require breaking one of them (e.g. "this needs a library") — surface the conflict and the cheapest std-lib alternative.
-- **Reach for a dependency = stop.** If a task seems to want a package, that's a signal you're solving it the wrong way here. Find the `sips`/`mdls`/ImageMagick/std-lib path instead, or flag it.
+- **Just do it within the constraints above.** Don't ask permission for routine work that respects the invariants (server zero-dep, app code in `index.html`, files-as-database, macOS). Adding a well-chosen vendored library is fine; only stop to ask before a heavier departure (an npm/bundler toolchain, a server-side package) — surface the trade-off and the lighter alternative.
+- **Prefer the platform, but don't dogmatically avoid libraries.** Reach first for what's already here (`sips`/`mdls`/ImageMagick/Node std-lib, native browser APIs) — it's often enough and keeps things light. But if a vendored library genuinely makes the app better, use it (per the Dependencies rule above) rather than rebuilding it from scratch.
 - **New external-tool calls must degrade, not throw.** Match the existing pattern: resolve the binary through `EXTRA_PATH`, wrap the spawn so a missing tool resolves to a safe fallback (`""`, `[]`, original file) rather than failing the request. ImageMagick and the API key are optional; the app must still run without them.
 - **Never clobber user data.** Auto-detected fields yield to manual edits (see the `prev`-preservation logic in `/api/add`). When touching persistence, preserve `folder`/`event`/`date` that a user set by hand, and keep `library.json` valid, pretty-printed JSON.
 
