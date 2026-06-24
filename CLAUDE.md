@@ -96,6 +96,8 @@ The `SP00KYCHIEF/field-notes` fork is **public**, so anything that gets pushed �
 
 ### Git & commits
 
+**Only ever work on the fork.** All branches, commits, and PRs target `SP00KYCHIEF/field-notes` — never the upstream `Laurencemdonald/field-notes`. When opening a PR, set the base explicitly to the fork's own `main` (`gh pr create --repo SP00KYCHIEF/field-notes --base main`), because GitHub defaults a fork's PR base to the upstream repo. Do not push to, or open PRs against, upstream.
+
 The history follows a consistent shape — match it rather than committing straight to `main`:
 
 - **One feature branch per change**, kebab-case named after the feature (`dup-filter`, `event-tag`, `batch-import`, `trip-palette-strip`). Land via a PR merged into `main`; don't push commits directly to `main`.
