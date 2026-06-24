@@ -39,6 +39,11 @@
   .dz-progress{position:absolute;left:0;bottom:0;height:2px;width:0;background:var(--ink);transition:width .35s ease;pointer-events:none;}
 
   .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:30px;}
+  .group-head{grid-column:1/-1;display:flex;align-items:baseline;gap:14px;margin:30px 0 2px;}
+  .group-head:first-child{margin-top:0;}
+  .gh-name{font-family:var(--serif);font-weight:500;font-size:19px;letter-spacing:.01em;color:var(--ink);}
+  .gh-rule{flex:1;height:1px;background:var(--line);}
+  .gh-count{font-family:var(--sans);font-size:10.5px;text-transform:lowercase;letter-spacing:.12em;color:var(--gray);}
   .card{border:1px solid var(--line);background:var(--bg);cursor:pointer;display:flex;flex-direction:column;overflow:hidden;animation:fadein .5s ease both;}
   @keyframes fadein{from{opacity:0;}to{opacity:1;}}
   .card .thumb{width:100%;aspect-ratio:4/3;background:#FAFAFA;overflow:hidden;display:block;}
@@ -299,6 +304,7 @@ const MOOD_ORDER=["bold","quiet","warm","sharp","textured","weird"];
 const filters={ category:new Set(), mood:new Set(), material:new Set(), color:new Set() };
 let sortMode="new"; // "new" | "az"
 let dupMode=false;  // when true, show only near-duplicate clusters, twins grouped together
+let groupMode="none"; // "none" | "trip" | "material" | "color" — secondary axis that sections the grid
 
 // Hamming distance between two dHash hex strings (lower = more visually similar).
 const DUP_THRESHOLD=10;             // out of 64 bits; bursts/reframes land well under this
@@ -402,7 +408,39 @@ function render(){
   if(dupMode && !list.length && items.length){
     const n=document.createElement("div"); n.className="looking"; n.textContent="no near-duplicates found"; grid.appendChild(n);
   }
-  list.forEach(it => grid.appendChild(cardEl(it)));
+  if(groupMode!=="none" && !dupMode) appendGrouped(list);
+  else list.forEach(it => grid.appendChild(cardEl(it)));
+}
+
+/* ---------- grouped view: section the grid by a secondary axis (trip/material/color) ---------- */
+const GROUP_UNTAGGED="untagged", GROUP_UNSORTED="unsorted";
+// Which section(s) an item belongs to under the current groupMode. Material can return
+// several (a brass+iron card lands in both "brass" and "iron" — intended for browsing).
+function groupKeysFor(it){
+  if(groupMode==="trip"){ const f=(it.folder||"").trim(); return [f||GROUP_UNSORTED]; }
+  if(groupMode==="material"){ const m=[...new Set((it.materials||[]).map(x=>(""+x).trim().toLowerCase()).filter(Boolean))]; return m.length?m:[GROUP_UNTAGGED]; }
+  if(groupMode==="color"){ const c=it.colors||[]; return [c.length?colorFamily(c[0]):GROUP_UNTAGGED]; } // dominant color only
+  return [];
+}
+function groupHead(label,count){
+  const h=document.createElement("div"); h.className="group-head";
+  const n=document.createElement("div"); n.className="gh-name"; n.textContent=label;
+  const r=document.createElement("div"); r.className="gh-rule";
+  const c=document.createElement("div"); c.className="gh-count"; c.textContent=count;
+  h.append(n,r,c); return h;
+}
+// Render `list` as headed sections. In-progress cards lead in their own section so they
+// stay visible (consistent with the flat view); ready cards group by the active axis,
+// sections ordered by descending size with untagged/unsorted sunk to the bottom.
+function appendGrouped(list){
+  const pending=list.filter(it=>it.status!=="ready");
+  if(pending.length){ grid.appendChild(groupHead("in progress",pending.length)); pending.forEach(it=>grid.appendChild(cardEl(it))); }
+  const groups=new Map();                            // key -> items; insertion preserves the active sort order
+  for(const it of list){ if(it.status!=="ready") continue;
+    for(const k of groupKeysFor(it)){ if(!groups.has(k)) groups.set(k,[]); groups.get(k).push(it); } }
+  const sink=k=>k===GROUP_UNTAGGED||k===GROUP_UNSORTED;   // these always sort last
+  const ordered=[...groups.entries()].sort((a,b)=>(sink(a[0])-sink(b[0]))||(b[1].length-a[1].length)||a[0].localeCompare(b[0]));
+  for(const [key,arr] of ordered){ grid.appendChild(groupHead(key,arr.length)); arr.forEach(it=>grid.appendChild(cardEl(it))); }
 }
 
 function clearDropTargets(){ document.querySelectorAll(".fold.drop-target").forEach(f=>f.classList.remove("drop-target")); }
@@ -634,13 +672,23 @@ function renderFilters(){
   });
   sortRow.appendChild(sl); sortRow.appendChild(sv); host.appendChild(sortRow);
 
+  // group row: secondary organizing axis. Mutually exclusive with the duplicate view.
+  const groupRow=document.createElement("div"); groupRow.className="facet";
+  const gl=document.createElement("div"); gl.className="facet-label"; gl.textContent="group";
+  const gv=document.createElement("div"); gv.className="facet-values";
+  [["none","none"],["trip","trip"],["material","material"],["color","color"]].forEach(([mode,txt])=>{
+    const el=document.createElement("div"); el.className="fval"+(groupMode===mode?" active":""); el.textContent=txt;
+    el.addEventListener("click",()=>{ groupMode=mode; if(groupMode!=="none") dupMode=false; render(); }); gv.appendChild(el);
+  });
+  groupRow.appendChild(gl); groupRow.appendChild(gv); host.appendChild(groupRow);
+
   // view row: duplicate-finder toggle (only useful once 2+ photos carry a perceptual hash)
   if(ready.filter(it=>it.phash).length>=2){
     const viewRow=document.createElement("div"); viewRow.className="facet";
     const vl=document.createElement("div"); vl.className="facet-label"; vl.textContent="view";
     const vv=document.createElement("div"); vv.className="facet-values";
     const dup=document.createElement("div"); dup.className="fval"+(dupMode?" active":""); dup.textContent="possible duplicates";
-    dup.addEventListener("click",()=>{ dupMode=!dupMode; render(); });
+    dup.addEventListener("click",()=>{ dupMode=!dupMode; if(dupMode) groupMode="none"; render(); });
     vv.appendChild(dup); viewRow.appendChild(vl); viewRow.appendChild(vv); host.appendChild(viewRow);
   } else if(dupMode){ dupMode=false; }   // nothing to compare → leave duplicate view
 
