@@ -324,6 +324,8 @@ async function openBoard(id){
   document.getElementById("boardName").value = board.name;
   fcanvas = new fabric.Canvas("boardCanvas",{ backgroundColor: board.bg||"#FFFFFF", preserveObjectStacking:true });
   ["object:modified","object:added","object:removed"].forEach(ev=>fcanvas.on(ev,scheduleSave));
+  fcanvas.on("selection:created", ()=>{ const o=fcanvas.getActiveObject(); if(o){ fcanvas.bringObjectToFront(o); scheduleSave(); } });
+  fcanvas.on("selection:updated", ()=>{ const o=fcanvas.getActiveObject(); if(o){ fcanvas.bringObjectToFront(o); scheduleSave(); } });
   fcanvas.on("object:modified", e=>{ const img=e.target; if(!img) return; const W=fcanvas.getWidth();
     img._tile={ itemId:img.itemId, x:img.left/W, y:img.top/W, w:(img.width*img.scaleX)/W, rot:img.angle||0, z:fcanvas.getObjects().indexOf(img) }; });
   document.getElementById("boardName").oninput = scheduleSave;
@@ -356,6 +358,7 @@ function applyTile(img, t){
   const scale=targetW/(img.width||targetW);
   img.set({ originX:"center", originY:"center", left:t.x*W, top:t.y*W, scaleX:scale, scaleY:scale, angle:t.rot||0 });
   img.itemId=t.itemId;
+  img.setControlsVisibility({ mt:false, mb:false, ml:false, mr:false }); // corners + rotate only -> aspect preserved
   img.setCoords();
 }
 
@@ -1162,6 +1165,14 @@ document.addEventListener("keydown", e=>{
   if(e.key!=="Escape") return;
   if(overlay.classList.contains("open")) closeModal();
   else if(selecting) exitSelect();
+});
+document.addEventListener("keydown", e=>{
+  if(!boardEditing || !fcanvas) return;
+  if(document.activeElement && document.activeElement.tagName==="INPUT") return;  // don't hijack typing in the name field
+  if(e.key==="Backspace" || e.key==="Delete"){
+    const o=fcanvas.getActiveObject();
+    if(o){ fcanvas.remove(o); fcanvas.discardActiveObject(); fcanvas.renderAll(); scheduleSave(); e.preventDefault(); }
+  }
 });
 
 // assign / change an image's trip (saves immediately on Enter or blur)
