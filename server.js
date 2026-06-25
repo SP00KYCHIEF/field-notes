@@ -452,7 +452,7 @@ async function analyzeFile(absPath, relPath) {
 }
 
 /* ---------------- static ---------------- */
-const MIME = { ".html": "text/html; charset=utf-8", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".woff2": "font/woff2", ".css": "text/css; charset=utf-8" };
+const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".woff2": "font/woff2", ".css": "text/css; charset=utf-8" };
 function serveFile(res, filePath) {
   fs.readFile(filePath, (err, data) => {
     if (err) { res.writeHead(404); res.end("not found"); return; }
@@ -486,6 +486,12 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && p.startsWith("/fonts/")) {
       const name = path.basename(decodeURIComponent(p.slice("/fonts/".length)));
       return serveFile(res, path.join(ROOT, "fonts", name));
+    }
+
+    // GET /lib/<file> -> vendored, self-hosted third-party libraries (e.g. Fabric.js)
+    if (req.method === "GET" && p.startsWith("/lib/")) {
+      const name = path.basename(decodeURIComponent(p.slice("/lib/".length)));
+      return serveFile(res, path.join(ROOT, "lib", name));
     }
 
     // PWA install support: web-app manifest + icons (so "Install as app" uses the Field Notes icon)
