@@ -142,6 +142,18 @@
   .zine-start:hover{border-color:var(--ink);color:var(--ink);}
   body.selecting .zine-start{display:none;}
 
+  #boardStart{right:140px;}
+  .board-overlay{display:none;position:fixed;inset:0;background:var(--bg);z-index:50;flex-direction:column;}
+  .board-overlay.open{display:flex;}
+  .board-bar{display:flex;align-items:center;gap:22px;padding:16px 24px;border-bottom:1px solid var(--line);}
+  .board-name{font-family:var(--serif);font-size:20px;border:none;outline:none;background:transparent;color:var(--ink);min-width:200px;flex:0 1 auto;}
+  .board-link{font-family:var(--sans);font-size:11.5px;text-transform:lowercase;letter-spacing:.04em;color:var(--gray);cursor:pointer;}
+  .board-link:hover{color:var(--ink);}
+  .board-swatches{display:inline-flex;gap:6px;margin-left:auto;}
+  .board-swatches .bsw{width:16px;height:16px;border:1px solid var(--line);cursor:pointer;}
+  .board-swatches .bsw.active{outline:2px solid var(--ink);outline-offset:1px;}
+  .board-stage{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#F2F2F0;position:relative;}
+
   /* select mode */
   body.selecting .dropzone{display:none;}
   .card.selected{outline:2px solid var(--ink);outline-offset:-1px;}
@@ -176,6 +188,7 @@
     <h1>Field Notes</h1>
     <div class="subtitle">a reference notebook for designers</div>
     <button class="zine-start" id="zineStart">make a zine →</button>
+    <button class="zine-start" id="boardStart">make a board →</button>
   </header>
 
   <div class="dropzone" id="dropzone">
@@ -191,6 +204,7 @@
   </div>
   <div class="folders" id="folders"></div>
   <div class="folders" id="events"></div>
+  <div class="folders" id="boards"></div>
   <div class="trip-strip" id="tripStrip"></div>
   <div class="filters" id="filters"></div>
   <div class="empty-note" id="emptyNote" style="display:none;">nothing collected yet</div>
@@ -239,6 +253,20 @@
   </div>
 </div>
 
+<div class="board-overlay" id="boardOverlay">
+  <div class="board-bar">
+    <input class="board-name" id="boardName" placeholder="board name…" autocomplete="off" spellcheck="false">
+    <span class="board-link" id="boardAdd">add references</span>
+    <span class="board-swatches" id="boardBg"></span>
+    <span class="board-link" id="boardExport">export image →</span>
+    <span class="board-link" id="boardClose">close</span>
+  </div>
+  <div class="board-stage" id="boardStage">
+    <canvas id="boardCanvas"></canvas>
+  </div>
+</div>
+
+<script src="/lib/fabric.min.js"></script>
 <script>
 "use strict";
 
@@ -249,6 +277,65 @@ const fileInput = document.getElementById("fileInput");
 
 let items = [];        // in-memory mirror of the library
 const pending = {};    // id -> original dataURL, kept only until save succeeds (for retry)
+
+let boards = [];          // loaded board records
+let boardEditing = null;  // the board currently open in the editor, or null
+let fcanvas = null;       // the Fabric.Canvas instance while editing
+
+async function loadBoards(){
+  try { boards = await (await fetch("/api/boards")).json(); }
+  catch(e){ boards = []; }
+  renderBoards();
+}
+async function apiBoardSave(b){
+  const r = await fetch("/api/board",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(b)});
+  return r.json();
+}
+async function apiBoardDelete(id){ await fetch("/api/board?id="+encodeURIComponent(id),{method:"DELETE"}); }
+
+function renderBoards(){
+  const host=document.getElementById("boards");
+  host.innerHTML="";
+  const mk=(label,onClick,active)=>{ const el=document.createElement("div"); el.className="fold"+(active?" active":""); el.textContent=label; el.addEventListener("click",onClick); return el; };
+  host.appendChild(mk("+ new board",()=>openBoard(null)));
+  boards.forEach(b=> host.appendChild(mk(b.name, ()=>openBoard(b.id), boardEditing && boardEditing.id===b.id)));
+}
+
+function fitBoardCanvas(){
+  if(!fcanvas) return;
+  const stage=document.getElementById("boardStage");
+  const pad=32, availW=stage.clientWidth-pad, availH=stage.clientHeight-pad;
+  let W=availW, H=W*0.75;
+  if(H>availH){ H=availH; W=H/0.75; }
+  fcanvas.setDimensions({width:Math.round(W),height:Math.round(H)});
+  layoutTiles();
+  fcanvas.renderAll();
+}
+
+async function openBoard(id){
+  if(fcanvas) closeBoard();
+  let board = id ? boards.find(b=>b.id===id) : null;
+  if(!board){ board = await apiBoardSave({name:"Untitled board",bg:"#FFFFFF",tiles:[]}); boards.unshift(board); renderBoards(); }
+  boardEditing = board;
+  document.getElementById("boardOverlay").classList.add("open");
+  document.getElementById("boardName").value = board.name;
+  fcanvas = new fabric.Canvas("boardCanvas",{ backgroundColor: board.bg||"#FFFFFF", preserveObjectStacking:true });
+  fitBoardCanvas();
+  await hydrateTiles(board);
+  fcanvas.renderAll();
+  window.addEventListener("resize", fitBoardCanvas);
+}
+
+function closeBoard(){
+  window.removeEventListener("resize", fitBoardCanvas);
+  if(fcanvas){ fcanvas.dispose(); fcanvas=null; }
+  boardEditing=null;
+  document.getElementById("boardOverlay").classList.remove("open");
+  renderBoards();
+}
+
+function layoutTiles(){}                 // replaced in a later task
+async function hydrateTiles(){}          // replaced in a later task
 
 // Batch import: drain a queue through a small worker pool so a big folder drop
 // stays fast without spawning one analysis per photo all at once.
@@ -1042,6 +1129,8 @@ function toggleSelect(id, card){
 }
 
 document.getElementById("zineStart").addEventListener("click", enterSelect);
+document.getElementById("boardStart").addEventListener("click",()=>openBoard(null));
+document.getElementById("boardClose").addEventListener("click",closeBoard);
 document.getElementById("ztCancel").addEventListener("click", exitSelect);
 document.getElementById("ztClear").addEventListener("click", ()=>{
   selectedIds.clear();
@@ -1292,6 +1381,7 @@ async function init(){
     items = mapLib(await r.json());
   }catch(e){ items=[]; }
   render();
+  loadBoards();
   // safety net: any item missing a date hasn't been scanned for location/date yet.
   // Backfill in the background (non-blocking), then refresh once.
   if(items.some(it=>it.date===undefined)){
