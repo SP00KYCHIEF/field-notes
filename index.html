@@ -230,6 +230,7 @@
   <input class="zt-title" id="ztTitle" placeholder="cover title…" autocomplete="off" spellcheck="false">
   <label class="zt-check"><input type="checkbox" id="ztNums" checked> page #s</label>
   <button class="zt-create" id="ztCreate" disabled>create zine →</button>
+  <span class="zt-link" id="ztBoard">make board</span>
   <span class="zt-link" id="ztCancel">cancel</span>
 </div>
 
@@ -1314,6 +1315,15 @@ document.getElementById("ztAll").addEventListener("click", ()=>{
   updateZineCount();
 });
 ztCreate.addEventListener("click", createZine);
+document.getElementById("ztBoard").addEventListener("click", async ()=>{
+  const ids=[...selectedIds];
+  if(!ids.length) return;
+  const layout=gridLayout(ids.length);
+  const tiles=ids.map((itemId,i)=>({ itemId, x:layout[i].x, y:layout[i].y, w:layout[i].w, rot:0, z:i }));
+  const board=await apiBoardSave({ name:"Untitled board", bg:"#FFFFFF", tiles });
+  boards.unshift(board); renderBoards();
+  await openBoard(board.id);
+});
 
 // readable date range for the cover, e.g. "may 30–31, 2026"
 function dateRange(list){
