@@ -104,6 +104,8 @@
   .fold.active{color:var(--ink);text-decoration:underline;text-underline-offset:3px;text-decoration-thickness:1px;}
   .fold .fc{color:#C4C4C4;font-size:10px;margin-left:3px;}
   .fold.drop-target{color:var(--ink);outline:1px dashed var(--ink);outline-offset:4px;}
+  .fold-board{margin-left:8px;color:var(--gray);cursor:pointer;}
+  .fold-board:hover{color:var(--ink);}
   .folders-hint{font-family:var(--serif);font-style:italic;font-size:13px;color:#A8A8A8;}
 
   /* trip palette strip — the dominant colors of the open trip, sized by how much of it they cover */
@@ -295,6 +297,32 @@ async function apiBoardSave(b){
   return r.json();
 }
 async function apiBoardDelete(id){ await fetch("/api/board?id="+encodeURIComponent(id),{method:"DELETE"}); }
+
+// Lay out n tiles in a loose centered grid, normalized to board width (4:3 board).
+// Returns [{x,y,w}] with slight deterministic jitter so it doesn't look mechanical.
+function gridLayout(n){
+  if(n<=0) return [];
+  const cols=Math.ceil(Math.sqrt(n*4/3));
+  const cellW=1/(cols+0.5), w=cellW*0.82;
+  const out=[];
+  for(let i=0;i<n;i++){
+    const r=Math.floor(i/cols), c=i%cols;
+    const x=(c+0.75)/(cols+0.5);
+    const y=(r+0.75)/(cols+0.5);            // same unit scale as x (normalized to width)
+    const jx=(((i*37)%10)/10-0.5)*0.02, jy=(((i*53)%10)/10-0.5)*0.02;
+    out.push({ x:x+jx, y:y+jy, w });
+  }
+  return out;
+}
+
+async function boardFromTrip(trip){
+  const ids=items.filter(it=>it.status==="ready" && (it.folder||"").trim()===trip).map(it=>it.id);
+  const layout=gridLayout(ids.length);
+  const tiles=ids.map((itemId,i)=>({ itemId, x:layout[i].x, y:layout[i].y, w:layout[i].w, rot:0, z:i }));
+  const board=await apiBoardSave({ name:trip, bg:"#FFFFFF", tiles });
+  boards.unshift(board); renderBoards();
+  await openBoard(board.id);
+}
 
 function renderBoards(){
   const host=document.getElementById("boards");
@@ -712,6 +740,11 @@ function renderFolders(){
       el.addEventListener("dragover", e=>{ if(!draggingCards) return; e.preventDefault(); e.dataTransfer.dropEffect="move"; el.classList.add("drop-target"); });
       el.addEventListener("dragleave", ()=>el.classList.remove("drop-target"));
       el.addEventListener("drop", e=>{ if(!draggingCards) return; e.preventDefault(); e.stopPropagation(); el.classList.remove("drop-target"); assignTrip(dragIds, key===UNSORTED?"":key); });
+    }
+    if(key!==null && key!==UNSORTED){
+      const b=document.createElement("span"); b.className="fold-board"; b.textContent="▦"; b.title="make a board from this trip";
+      b.addEventListener("click", async e=>{ e.stopPropagation(); await boardFromTrip(key); });
+      el.appendChild(b);
     }
     return el;
   };
