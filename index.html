@@ -153,6 +153,9 @@
   .board-swatches .bsw{width:16px;height:16px;border:1px solid var(--line);cursor:pointer;}
   .board-swatches .bsw.active{outline:2px solid var(--ink);outline-offset:1px;}
   .board-stage{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#F2F2F0;position:relative;}
+  .board-picker{position:absolute;top:0;right:0;bottom:0;width:180px;overflow-y:auto;background:var(--bg);border-left:1px solid var(--line);padding:10px;display:flex;flex-direction:column;gap:8px;}
+  .board-picker img{width:100%;cursor:pointer;border:1px solid var(--line);}
+  .board-picker img:hover{outline:2px solid var(--ink);}
 
   /* select mode */
   body.selecting .dropzone{display:none;}
@@ -320,22 +323,120 @@ async function openBoard(id){
   document.getElementById("boardOverlay").classList.add("open");
   document.getElementById("boardName").value = board.name;
   fcanvas = new fabric.Canvas("boardCanvas",{ backgroundColor: board.bg||"#FFFFFF", preserveObjectStacking:true });
+  ["object:modified","object:added","object:removed"].forEach(ev=>fcanvas.on(ev,scheduleSave));
+  fcanvas.on("object:modified", e=>{ const img=e.target; if(!img) return; const W=fcanvas.getWidth();
+    img._tile={ itemId:img.itemId, x:img.left/W, y:img.top/W, w:(img.width*img.scaleX)/W, rot:img.angle||0, z:fcanvas.getObjects().indexOf(img) }; });
+  document.getElementById("boardName").oninput = scheduleSave;
   fitBoardCanvas();
+  fcanvas._hydrating=true;
   await hydrateTiles(board);
+  fcanvas._hydrating=false;
   fcanvas.renderAll();
   window.addEventListener("resize", fitBoardCanvas);
 }
 
 function closeBoard(){
+  clearTimeout(saveTimer);
   window.removeEventListener("resize", fitBoardCanvas);
   if(fcanvas){ fcanvas.dispose(); fcanvas=null; }
   boardEditing=null;
   document.getElementById("boardOverlay").classList.remove("open");
+  const pk=document.getElementById("boardPicker"); if(pk) pk.remove();
   renderBoards();
 }
 
-function layoutTiles(){}                 // replaced in a later task
-async function hydrateTiles(){}          // replaced in a later task
+// Build the /library-print URL for a tile's photo, mid-size for the editor.
+function tileImgURL(itemId){ const it=items.find(x=>x.id===itemId); return it&&it.file ? ("/library-print/"+it.file+"?w=900") : null; }
+
+// NOTE: x, y, w are ALL normalized to canvas WIDTH (fixed 4:3 aspect), so y spans 0..0.75.
+// Place a Fabric image object from a normalized tile, using the current canvas width W.
+function applyTile(img, t){
+  const W=fcanvas.getWidth();
+  const targetW=t.w*W;
+  const scale=targetW/(img.width||targetW);
+  img.set({ originX:"center", originY:"center", left:t.x*W, top:t.y*W, scaleX:scale, scaleY:scale, angle:t.rot||0 });
+  img.itemId=t.itemId;
+  img.setCoords();
+}
+
+// Reposition existing objects after a resize (coords are normalized, so re-derive px).
+function layoutTiles(){
+  if(!fcanvas) return;
+  const W=fcanvas.getWidth();
+  fcanvas.getObjects().forEach(img=>{
+    const t=img._tile; if(!t) return;
+    const scale=(t.w*W)/(img.width||(t.w*W));
+    img.set({ left:t.x*W, top:t.y*W, scaleX:scale, scaleY:scale, angle:t.rot||0 });
+    img.setCoords();
+  });
+}
+
+// Load every tile of a board into the canvas (in z order).
+async function hydrateTiles(board){
+  const ordered=(board.tiles||[]).slice().sort((a,b)=>a.z-b.z);
+  for(const t of ordered){
+    const u=tileImgURL(t.itemId); if(!u) continue;
+    try {
+      const img=await fabric.FabricImage.fromURL(u,{crossOrigin:"anonymous"});
+      img._tile=t; applyTile(img,t); fcanvas.add(img);
+    } catch(e){ console.warn("tile load failed", t.itemId, e); }
+  }
+}
+
+// Read the current canvas back into our normalized tile model.
+function serializeTiles(){
+  const W=fcanvas.getWidth();
+  return fcanvas.getObjects().map((img,i)=>({
+    itemId: img.itemId,
+    x: img.left/W,
+    y: img.top/W,
+    w: (img.width*img.scaleX)/W,
+    rot: img.angle||0,
+    z: i,
+  })).filter(t=>t.itemId);
+}
+
+// Debounced autosave.
+let saveTimer=null;
+function scheduleSave(){
+  if(!boardEditing) return;
+  if(fcanvas && fcanvas._hydrating) return;
+  clearTimeout(saveTimer);
+  saveTimer=setTimeout(async ()=>{
+    if(!boardEditing || !fcanvas) return;
+    try {
+      boardEditing.name=document.getElementById("boardName").value.trim()||"Untitled board";
+      boardEditing.bg=fcanvas.backgroundColor||"#FFFFFF";
+      boardEditing.tiles=serializeTiles();
+      const saved=await apiBoardSave(boardEditing);
+      boardEditing.id=saved.id;
+      const i=boards.findIndex(b=>b.id===saved.id); if(i>=0) boards[i]=saved;
+      renderBoards();
+    } catch(e){ console.warn("board save failed", e); }
+  },600);
+}
+
+// Add-references picker.
+function addTile(itemId){
+  const u=tileImgURL(itemId); if(!u) return;
+  fabric.FabricImage.fromURL(u,{crossOrigin:"anonymous"}).then(img=>{
+    const t={itemId, x:0.5+(Math.random()*0.1-0.05), y:0.4+(Math.random()*0.1-0.05), w:0.28, rot:0, z:fcanvas.getObjects().length};
+    img._tile=t; applyTile(img,t); fcanvas.add(img); fcanvas.setActiveObject(img); fcanvas.renderAll();
+  }).catch(e=>console.warn("addTile failed",e));
+}
+function openPicker(){
+  const host=document.getElementById("boardStage");
+  let pick=document.getElementById("boardPicker");
+  if(pick){ pick.remove(); return; }
+  pick=document.createElement("div"); pick.id="boardPicker"; pick.className="board-picker";
+  items.filter(it=>it.status==="ready").forEach(it=>{
+    const im=document.createElement("img"); im.src="/library-print/"+it.file+"?w=200"; im.title=it.name||"";
+    im.addEventListener("click",()=>{ addTile(it.id); });
+    pick.appendChild(im);
+  });
+  host.appendChild(pick);
+}
+document.getElementById("boardAdd").addEventListener("click",openPicker);
 
 // Batch import: drain a queue through a small worker pool so a big folder drop
 // stays fast without spawning one analysis per photo all at once.
