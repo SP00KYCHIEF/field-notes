@@ -315,6 +315,17 @@ function fitBoardCanvas(){
   fcanvas.renderAll();
 }
 
+const BOARD_BGS=["#FFFFFF","#F4F1EA","#111111","#D9D9D6"]; // white, paper, black, neutral
+function renderBoardBg(){
+  const host=document.getElementById("boardBg"); host.innerHTML="";
+  BOARD_BGS.forEach(c=>{
+    const s=document.createElement("span"); s.className="bsw"+((fcanvas&&fcanvas.backgroundColor===c)?" active":"");
+    s.style.background=c;
+    s.addEventListener("click",()=>{ fcanvas.backgroundColor=c; fcanvas.renderAll(); renderBoardBg(); scheduleSave(); });
+    host.appendChild(s);
+  });
+}
+
 async function openBoard(id){
   if(fcanvas) closeBoard();
   let board = id ? boards.find(b=>b.id===id) : null;
@@ -334,6 +345,7 @@ async function openBoard(id){
   await hydrateTiles(board);
   fcanvas._hydrating=false;
   fcanvas.renderAll();
+  renderBoardBg();
   window.addEventListener("resize", fitBoardCanvas);
 }
 
