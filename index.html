@@ -104,6 +104,8 @@
   .fold.active{color:var(--ink);text-decoration:underline;text-underline-offset:3px;text-decoration-thickness:1px;}
   .fold .fc{color:#C4C4C4;font-size:10px;margin-left:3px;}
   .fold.drop-target{color:var(--ink);outline:1px dashed var(--ink);outline-offset:4px;}
+  .fold-board{margin-left:8px;color:var(--gray);cursor:pointer;}
+  .fold-board:hover{color:var(--ink);}
   .folders-hint{font-family:var(--serif);font-style:italic;font-size:13px;color:#A8A8A8;}
 
   /* trip palette strip — the dominant colors of the open trip, sized by how much of it they cover */
@@ -142,6 +144,21 @@
   .zine-start:hover{border-color:var(--ink);color:var(--ink);}
   body.selecting .zine-start{display:none;}
 
+  #boardStart{right:140px;}
+  .board-overlay{display:none;position:fixed;inset:0;background:var(--bg);z-index:50;flex-direction:column;}
+  .board-overlay.open{display:flex;}
+  .board-bar{display:flex;align-items:center;gap:22px;padding:16px 24px;border-bottom:1px solid var(--line);}
+  .board-name{font-family:var(--serif);font-size:20px;border:none;outline:none;background:transparent;color:var(--ink);min-width:200px;flex:0 1 auto;}
+  .board-link{font-family:var(--sans);font-size:11.5px;text-transform:lowercase;letter-spacing:.04em;color:var(--gray);cursor:pointer;}
+  .board-link:hover{color:var(--ink);}
+  .board-swatches{display:inline-flex;gap:6px;margin-left:auto;}
+  .board-swatches .bsw{width:16px;height:16px;border:1px solid var(--line);cursor:pointer;}
+  .board-swatches .bsw.active{outline:2px solid var(--ink);outline-offset:1px;}
+  .board-stage{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#F2F2F0;position:relative;}
+  .board-picker{position:absolute;top:0;right:0;bottom:0;width:180px;overflow-y:auto;background:var(--bg);border-left:1px solid var(--line);padding:10px;display:flex;flex-direction:column;gap:8px;}
+  .board-picker img{width:100%;cursor:pointer;border:1px solid var(--line);}
+  .board-picker img:hover{outline:2px solid var(--ink);}
+
   /* select mode */
   body.selecting .dropzone{display:none;}
   .card.selected{outline:2px solid var(--ink);outline-offset:-1px;}
@@ -176,6 +193,7 @@
     <h1>Field Notes</h1>
     <div class="subtitle">a reference notebook for designers</div>
     <button class="zine-start" id="zineStart">make a zine →</button>
+    <button class="zine-start" id="boardStart">make a board →</button>
   </header>
 
   <div class="dropzone" id="dropzone">
@@ -191,6 +209,7 @@
   </div>
   <div class="folders" id="folders"></div>
   <div class="folders" id="events"></div>
+  <div class="folders" id="boards"></div>
   <div class="trip-strip" id="tripStrip"></div>
   <div class="filters" id="filters"></div>
   <div class="empty-note" id="emptyNote" style="display:none;">nothing collected yet</div>
@@ -211,6 +230,7 @@
   <input class="zt-title" id="ztTitle" placeholder="cover title…" autocomplete="off" spellcheck="false">
   <label class="zt-check"><input type="checkbox" id="ztNums" checked> page #s</label>
   <button class="zt-create" id="ztCreate" disabled>create zine →</button>
+  <span class="zt-link" id="ztBoard">make board</span>
   <span class="zt-link" id="ztCancel">cancel</span>
 </div>
 
@@ -239,6 +259,20 @@
   </div>
 </div>
 
+<div class="board-overlay" id="boardOverlay">
+  <div class="board-bar">
+    <input class="board-name" id="boardName" placeholder="board name…" autocomplete="off" spellcheck="false">
+    <span class="board-link" id="boardAdd">add references</span>
+    <span class="board-swatches" id="boardBg"></span>
+    <span class="board-link" id="boardExport">export image →</span>
+    <span class="board-link" id="boardClose">close</span>
+  </div>
+  <div class="board-stage" id="boardStage">
+    <canvas id="boardCanvas"></canvas>
+  </div>
+</div>
+
+<script src="/lib/fabric.min.js"></script>
 <script>
 "use strict";
 
@@ -249,6 +283,216 @@ const fileInput = document.getElementById("fileInput");
 
 let items = [];        // in-memory mirror of the library
 const pending = {};    // id -> original dataURL, kept only until save succeeds (for retry)
+
+let boards = [];          // loaded board records
+let boardEditing = null;  // the board currently open in the editor, or null
+let fcanvas = null;       // the Fabric.Canvas instance while editing
+
+async function loadBoards(){
+  try { boards = await (await fetch("/api/boards")).json(); }
+  catch(e){ boards = []; }
+  renderBoards();
+}
+async function apiBoardSave(b){
+  const r = await fetch("/api/board",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(b)});
+  return r.json();
+}
+async function apiBoardDelete(id){ await fetch("/api/board?id="+encodeURIComponent(id),{method:"DELETE"}); }
+
+// Lay out n tiles in a loose centered grid, normalized to board width (4:3 board).
+// Returns [{x,y,w}] with slight deterministic jitter so it doesn't look mechanical.
+function gridLayout(n){
+  if(n<=0) return [];
+  const cols=Math.ceil(Math.sqrt(n*4/3));
+  const cellW=1/(cols+0.5), w=cellW*0.82;
+  const out=[];
+  for(let i=0;i<n;i++){
+    const r=Math.floor(i/cols), c=i%cols;
+    const x=(c+0.75)/(cols+0.5);
+    const y=(r+0.75)/(cols+0.5);            // same unit scale as x (normalized to width)
+    const jx=(((i*37)%10)/10-0.5)*0.02, jy=(((i*53)%10)/10-0.5)*0.02;
+    out.push({ x:x+jx, y:y+jy, w });
+  }
+  return out;
+}
+
+async function boardFromTrip(trip){
+  const ids=items.filter(it=>it.status==="ready" && (it.folder||"").trim()===trip).map(it=>it.id);
+  const layout=gridLayout(ids.length);
+  const tiles=ids.map((itemId,i)=>({ itemId, x:layout[i].x, y:layout[i].y, w:layout[i].w, rot:0, z:i }));
+  const board=await apiBoardSave({ name:trip, bg:"#FFFFFF", tiles });
+  boards.unshift(board); renderBoards();
+  await openBoard(board.id);
+}
+
+function renderBoards(){
+  const host=document.getElementById("boards");
+  host.innerHTML="";
+  const mk=(label,onClick,active)=>{ const el=document.createElement("div"); el.className="fold"+(active?" active":""); el.textContent=label; el.addEventListener("click",onClick); return el; };
+  host.appendChild(mk("+ new board",()=>openBoard(null)));
+  boards.forEach(b=> host.appendChild(mk(b.name, ()=>openBoard(b.id), boardEditing && boardEditing.id===b.id)));
+}
+
+function fitBoardCanvas(){
+  if(!fcanvas) return;
+  const stage=document.getElementById("boardStage");
+  const pad=32, availW=stage.clientWidth-pad, availH=stage.clientHeight-pad;
+  let W=availW, H=W*0.75;
+  if(H>availH){ H=availH; W=H/0.75; }
+  fcanvas.setDimensions({width:Math.round(W),height:Math.round(H)});
+  layoutTiles();
+  fcanvas.renderAll();
+}
+
+const BOARD_BGS=["#FFFFFF","#F4F1EA","#111111","#D9D9D6"]; // white, paper, black, neutral
+function renderBoardBg(){
+  const host=document.getElementById("boardBg"); host.innerHTML="";
+  BOARD_BGS.forEach(c=>{
+    const s=document.createElement("span"); s.className="bsw"+((fcanvas&&fcanvas.backgroundColor===c)?" active":"");
+    s.style.background=c;
+    s.addEventListener("click",()=>{ fcanvas.backgroundColor=c; fcanvas.renderAll(); renderBoardBg(); scheduleSave(); });
+    host.appendChild(s);
+  });
+}
+
+async function openBoard(id){
+  if(fcanvas) closeBoard();
+  let board = id ? boards.find(b=>b.id===id) : null;
+  if(!board){ board = await apiBoardSave({name:"Untitled board",bg:"#FFFFFF",tiles:[]}); boards.unshift(board); renderBoards(); }
+  boardEditing = board;
+  document.getElementById("boardOverlay").classList.add("open");
+  document.getElementById("boardName").value = board.name;
+  fcanvas = new fabric.Canvas("boardCanvas",{ backgroundColor: board.bg||"#FFFFFF", preserveObjectStacking:true });
+  ["object:modified","object:added","object:removed"].forEach(ev=>fcanvas.on(ev,scheduleSave));
+  fcanvas.on("selection:created", ()=>{ const o=fcanvas.getActiveObject(); if(o){ fcanvas.bringObjectToFront(o); scheduleSave(); } });
+  fcanvas.on("selection:updated", ()=>{ const o=fcanvas.getActiveObject(); if(o){ fcanvas.bringObjectToFront(o); scheduleSave(); } });
+  fcanvas.on("object:modified", e=>{ const img=e.target; if(!img) return; const W=fcanvas.getWidth();
+    img._tile={ itemId:img.itemId, x:img.left/W, y:img.top/W, w:(img.width*img.scaleX)/W, rot:img.angle||0, z:fcanvas.getObjects().indexOf(img) }; });
+  document.getElementById("boardName").oninput = scheduleSave;
+  fitBoardCanvas();
+  fcanvas._hydrating=true;
+  await hydrateTiles(board);
+  fcanvas._hydrating=false;
+  fcanvas.renderAll();
+  renderBoardBg();
+  window.addEventListener("resize", fitBoardCanvas);
+}
+
+function closeBoard(){
+  clearTimeout(saveTimer);
+  window.removeEventListener("resize", fitBoardCanvas);
+  if(fcanvas){ fcanvas.dispose(); fcanvas=null; }
+  boardEditing=null;
+  document.getElementById("boardOverlay").classList.remove("open");
+  const pk=document.getElementById("boardPicker"); if(pk) pk.remove();
+  renderBoards();
+}
+
+// Build the /library-print URL for a tile's photo, mid-size for the editor.
+function tileImgURL(itemId){ const it=items.find(x=>x.id===itemId); return it&&it.file ? ("/library-print/"+it.file+"?w=900") : null; }
+
+// NOTE: x, y, w are ALL normalized to canvas WIDTH (fixed 4:3 aspect), so y spans 0..0.75.
+// Place a Fabric image object from a normalized tile, using the current canvas width W.
+function applyTile(img, t){
+  const W=fcanvas.getWidth();
+  const targetW=t.w*W;
+  const scale=targetW/(img.width||targetW);
+  img.set({ originX:"center", originY:"center", left:t.x*W, top:t.y*W, scaleX:scale, scaleY:scale, angle:t.rot||0 });
+  img.itemId=t.itemId;
+  img.setControlsVisibility({ mt:false, mb:false, ml:false, mr:false }); // corners + rotate only -> aspect preserved
+  img.setCoords();
+}
+
+// Reposition existing objects after a resize (coords are normalized, so re-derive px).
+function layoutTiles(){
+  if(!fcanvas) return;
+  const W=fcanvas.getWidth();
+  fcanvas.getObjects().forEach(img=>{
+    const t=img._tile; if(!t) return;
+    const scale=(t.w*W)/(img.width||(t.w*W));
+    img.set({ left:t.x*W, top:t.y*W, scaleX:scale, scaleY:scale, angle:t.rot||0 });
+    img.setCoords();
+  });
+}
+
+// Load every tile of a board into the canvas (in z order).
+async function hydrateTiles(board){
+  const ordered=(board.tiles||[]).slice().sort((a,b)=>a.z-b.z);
+  for(const t of ordered){
+    const u=tileImgURL(t.itemId); if(!u) continue;
+    try {
+      const img=await fabric.FabricImage.fromURL(u,{crossOrigin:"anonymous"});
+      img._tile=t; applyTile(img,t); fcanvas.add(img);
+    } catch(e){ console.warn("tile load failed", t.itemId, e); }
+  }
+}
+
+// Read the current canvas back into our normalized tile model.
+function serializeTiles(){
+  const W=fcanvas.getWidth();
+  return fcanvas.getObjects().map((img,i)=>({
+    itemId: img.itemId,
+    x: img.left/W,
+    y: img.top/W,
+    w: (img.width*img.scaleX)/W,
+    rot: img.angle||0,
+    z: i,
+  })).filter(t=>t.itemId);
+}
+
+// Debounced autosave.
+let saveTimer=null;
+function scheduleSave(){
+  if(!boardEditing) return;
+  if(fcanvas && fcanvas._hydrating) return;
+  clearTimeout(saveTimer);
+  saveTimer=setTimeout(async ()=>{
+    if(!boardEditing || !fcanvas) return;
+    try {
+      boardEditing.name=document.getElementById("boardName").value.trim()||"Untitled board";
+      boardEditing.bg=fcanvas.backgroundColor||"#FFFFFF";
+      boardEditing.tiles=serializeTiles();
+      const saved=await apiBoardSave(boardEditing);
+      boardEditing.id=saved.id;
+      const i=boards.findIndex(b=>b.id===saved.id); if(i>=0) boards[i]=saved;
+      renderBoards();
+    } catch(e){ console.warn("board save failed", e); }
+  },600);
+}
+
+// Add-references picker.
+function addTile(itemId){
+  const u=tileImgURL(itemId); if(!u) return;
+  fabric.FabricImage.fromURL(u,{crossOrigin:"anonymous"}).then(img=>{
+    const t={itemId, x:0.5+(Math.random()*0.1-0.05), y:0.4+(Math.random()*0.1-0.05), w:0.28, rot:0, z:fcanvas.getObjects().length};
+    img._tile=t; applyTile(img,t); fcanvas.add(img); fcanvas.setActiveObject(img); fcanvas.renderAll();
+  }).catch(e=>console.warn("addTile failed",e));
+}
+function openPicker(){
+  const host=document.getElementById("boardStage");
+  let pick=document.getElementById("boardPicker");
+  if(pick){ pick.remove(); return; }
+  pick=document.createElement("div"); pick.id="boardPicker"; pick.className="board-picker";
+  items.filter(it=>it.status==="ready").forEach(it=>{
+    const im=document.createElement("img"); im.src="/library-print/"+it.file+"?w=200"; im.title=it.name||"";
+    im.addEventListener("click",()=>{ addTile(it.id); });
+    pick.appendChild(im);
+  });
+  host.appendChild(pick);
+}
+document.getElementById("boardAdd").addEventListener("click",openPicker);
+function exportBoard(){
+  if(!fcanvas) return;
+  fcanvas.discardActiveObject(); fcanvas.renderAll();   // don't bake selection handles into the image
+  const W=fcanvas.getWidth();
+  const multiplier=Math.max(1, 2400/W);                 // render ~2400px wide
+  const dataURL=fcanvas.toDataURL({ format:"jpeg", quality:0.92, multiplier });
+  const a=document.createElement("a");
+  a.href=dataURL;
+  a.download=((boardEditing&&boardEditing.name)||"board").replace(/[^\w-]+/g,"_")+".jpg";
+  document.body.appendChild(a); a.click(); a.remove();
+}
+document.getElementById("boardExport").addEventListener("click",exportBoard);
 
 // Batch import: drain a queue through a small worker pool so a big folder drop
 // stays fast without spawning one analysis per photo all at once.
@@ -497,6 +741,11 @@ function renderFolders(){
       el.addEventListener("dragover", e=>{ if(!draggingCards) return; e.preventDefault(); e.dataTransfer.dropEffect="move"; el.classList.add("drop-target"); });
       el.addEventListener("dragleave", ()=>el.classList.remove("drop-target"));
       el.addEventListener("drop", e=>{ if(!draggingCards) return; e.preventDefault(); e.stopPropagation(); el.classList.remove("drop-target"); assignTrip(dragIds, key===UNSORTED?"":key); });
+    }
+    if(key!==null && key!==UNSORTED){
+      const b=document.createElement("span"); b.className="fold-board"; b.textContent="▦"; b.title="make a board from this trip";
+      b.addEventListener("click", async e=>{ e.stopPropagation(); await boardFromTrip(key); });
+      el.appendChild(b);
     }
     return el;
   };
@@ -963,6 +1212,14 @@ document.addEventListener("keydown", e=>{
   if(overlay.classList.contains("open")) closeModal();
   else if(selecting) exitSelect();
 });
+document.addEventListener("keydown", e=>{
+  if(!boardEditing || !fcanvas) return;
+  if(document.activeElement && document.activeElement.tagName==="INPUT") return;  // don't hijack typing in the name field
+  if(e.key==="Backspace" || e.key==="Delete"){
+    const o=fcanvas.getActiveObject();
+    if(o){ fcanvas.remove(o); fcanvas.discardActiveObject(); fcanvas.renderAll(); scheduleSave(); e.preventDefault(); }
+  }
+});
 
 // assign / change an image's trip (saves immediately on Enter or blur)
 const tripInput=document.getElementById("mTrip");
@@ -1042,6 +1299,8 @@ function toggleSelect(id, card){
 }
 
 document.getElementById("zineStart").addEventListener("click", enterSelect);
+document.getElementById("boardStart").addEventListener("click",()=>openBoard(null));
+document.getElementById("boardClose").addEventListener("click",closeBoard);
 document.getElementById("ztCancel").addEventListener("click", exitSelect);
 document.getElementById("ztClear").addEventListener("click", ()=>{
   selectedIds.clear();
@@ -1056,6 +1315,15 @@ document.getElementById("ztAll").addEventListener("click", ()=>{
   updateZineCount();
 });
 ztCreate.addEventListener("click", createZine);
+document.getElementById("ztBoard").addEventListener("click", async ()=>{
+  const ids=[...selectedIds];
+  if(!ids.length) return;
+  const layout=gridLayout(ids.length);
+  const tiles=ids.map((itemId,i)=>({ itemId, x:layout[i].x, y:layout[i].y, w:layout[i].w, rot:0, z:i }));
+  const board=await apiBoardSave({ name:"Untitled board", bg:"#FFFFFF", tiles });
+  boards.unshift(board); renderBoards();
+  await openBoard(board.id);
+});
 
 // readable date range for the cover, e.g. "may 30–31, 2026"
 function dateRange(list){
@@ -1292,6 +1560,7 @@ async function init(){
     items = mapLib(await r.json());
   }catch(e){ items=[]; }
   render();
+  loadBoards();
   // safety net: any item missing a date hasn't been scanned for location/date yet.
   // Backfill in the background (non-blocking), then refresh once.
   if(items.some(it=>it.date===undefined)){
