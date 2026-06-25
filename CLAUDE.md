@@ -51,6 +51,10 @@ This is the core flow and the most intricate part. The browser sends a data-URL 
 
 Selected cards lay out as a printable zine. The imposition (PocketMod 8-panel single-sheet that folds with one cut, or saddle-stitch booklet) is built **client-side in `index.html`**, then POSTed to `/api/zine`, which stashes the HTML in-memory (`zineStore`, last 20) and returns an id. It's served back at a real `/zine/<id>` URL because printing from a real page is reliable across browsers; `/api/open` can launch it in a chromeless Chrome app window. The fold-order math is the one place where "looks right" and "is right" diverge — verify with page numbers.
 
+### Boards (collage)
+
+Persistent freeform moodboards. `boards.json` (gitignored, same pattern as `library.json`) stores board records — each a list of tiles `{itemId, x, y, w, rot, z}` with geometry **normalized to board width** (4:3 logical aspect, center origin). CRUD lives at `/api/board(s)`; tiles are healed against the library on read so deleting a photo can't orphan a tile. The editor (a fullscreen overlay in `index.html`) is driven by **Fabric.js** (vendored at `lib/fabric.min.js`, served by `/lib/`): we hydrate Fabric objects from tiles on open and serialize back on change (autosaved, debounced). Export is Fabric's native `toDataURL({format:'jpeg', multiplier})`. A board can be created blank, from a trip (`▦` on a trip), or from the current selection.
+
 ### Frontend (`index.html`)
 
 Loads `/api/library` into an in-memory `items` array and renders a card grid. Major regions, roughly in file order: filter/sort state + `matches()`, near-duplicate clustering (`hamming`/`dupClusters`), color-family bucketing for the color filter, server-call wrappers (`apiAdd`/`apiEdit`/`apiDelete`), rendering (`render`, `cardEl`, folder/event/trip-strip/filter renderers), and the drop-zone ingest path. Cards request downscaled images via `/library-print/<file>?w=N` (cached per width in `.cache/`), never the full-res original.
