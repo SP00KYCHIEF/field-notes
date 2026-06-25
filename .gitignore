@@ -9,6 +9,8 @@
 /library/
 /library.json
 /library.json.bak
+/boards.json
+/scratchpad/
 
 # ── server scratch (auto-generated, auto-deleted) ────────────────────────────
 .cache/
