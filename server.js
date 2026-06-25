@@ -137,6 +137,41 @@ function readLib() {
 function writeLib(arr) {
   fs.writeFileSync(LIB_JSON, JSON.stringify(arr, null, 2));
 }
+
+const BOARDS_JSON = path.join(ROOT, "boards.json");
+function readBoards() {
+  try { return JSON.parse(fs.readFileSync(BOARDS_JSON, "utf8")); } catch (e) { return []; }
+}
+function writeBoards(arr) { fs.writeFileSync(BOARDS_JSON, JSON.stringify(arr, null, 2)); }
+
+// Coerce/clamp an incoming board into our stored shape. Drops unknown fields and
+// any tile without an itemId. x/y/w are normalized fractions of board width.
+function normBoard(b, prev) {
+  const num = (v, d) => { const n = parseFloat(v); return Number.isFinite(n) ? n : d; };
+  const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
+  const tiles = (Array.isArray(b.tiles) ? b.tiles : []).slice(0, 500).map(t => ({
+    itemId: String(t.itemId || ""),
+    x: clamp(num(t.x, 0.5), -1, 2),
+    y: clamp(num(t.y, 0.4), -1, 2),
+    w: clamp(num(t.w, 0.25), 0.02, 2),
+    rot: num(t.rot, 0),
+    z: Math.max(0, Math.floor(num(t.z, 0))),
+  })).filter(t => t.itemId);
+  const id = (b.id && /^[\w-]+$/.test(b.id)) ? b.id : ("bd_" + Date.now());
+  const now = new Date().toISOString();
+  return {
+    id,
+    name: (b.name || "Untitled board").toString().trim().slice(0, 120) || "Untitled board",
+    bg: /^#[0-9A-Fa-f]{6}$/.test(b.bg || "") ? b.bg : "#FFFFFF",
+    tiles,
+    created: (prev && prev.created) || now,
+    updated: now,
+  };
+}
+// Drop tiles whose photo no longer exists, so boards self-heal after a delete.
+function healBoard(board, libIds) {
+  return Object.assign({}, board, { tiles: (board.tiles || []).filter(t => libIds.has(t.itemId)) });
+}
 function body(req) {
   return new Promise((res, rej) => {
     let chunks = [];
@@ -532,6 +567,43 @@ const server = http.createServer(async (req, res) => {
     // GET /api/library -> all items
     if (req.method === "GET" && p === "/api/library") {
       return json(res, 200, readLib());
+    }
+
+    // GET /api/boards -> all boards (tiles healed against the current library)
+    if (req.method === "GET" && p === "/api/boards") {
+      const libIds = new Set(readLib().map(x => x.id));
+      return json(res, 200, readBoards().map(b => healBoard(b, libIds)));
+    }
+
+    // GET /api/board?id=... -> one board (healed), 404 if missing
+    if (req.method === "GET" && p === "/api/board") {
+      const id = url.searchParams.get("id");
+      if (!id) return json(res, 400, { error: "id required" });
+      const b = readBoards().find(x => x.id === id);
+      if (!b) return json(res, 404, { error: "not found" });
+      const libIds = new Set(readLib().map(x => x.id));
+      return json(res, 200, healBoard(b, libIds));
+    }
+
+    // POST /api/board -> upsert a board (creates id if absent), returns the stored record
+    if (req.method === "POST" && p === "/api/board") {
+      const b = await body(req);
+      let boards = readBoards();
+      const prev = b.id ? boards.find(x => x.id === b.id) : null;
+      const rec = normBoard(b, prev);
+      boards = boards.filter(x => x.id !== rec.id);
+      boards.unshift(rec);
+      writeBoards(boards);
+      return json(res, 200, rec);
+    }
+
+    // DELETE /api/board?id=... -> remove a board
+    if (req.method === "DELETE" && p === "/api/board") {
+      const id = url.searchParams.get("id");
+      if (!id) return json(res, 400, { error: "id required" });
+      const boards = readBoards().filter(x => x.id !== id);
+      writeBoards(boards);
+      return json(res, 200, { ok: true });
     }
 
     // GET /zine/<id> -> a previously built zine, served as a real page (prints reliably in Safari)
