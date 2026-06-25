@@ -437,6 +437,18 @@ function openPicker(){
   host.appendChild(pick);
 }
 document.getElementById("boardAdd").addEventListener("click",openPicker);
+function exportBoard(){
+  if(!fcanvas) return;
+  fcanvas.discardActiveObject(); fcanvas.renderAll();   // don't bake selection handles into the image
+  const W=fcanvas.getWidth();
+  const multiplier=Math.max(1, 2400/W);                 // render ~2400px wide
+  const dataURL=fcanvas.toDataURL({ format:"jpeg", quality:0.92, multiplier });
+  const a=document.createElement("a");
+  a.href=dataURL;
+  a.download=((boardEditing&&boardEditing.name)||"board").replace(/[^\w-]+/g,"_")+".jpg";
+  document.body.appendChild(a); a.click(); a.remove();
+}
+document.getElementById("boardExport").addEventListener("click",exportBoard);
 
 // Batch import: drain a queue through a small worker pool so a big folder drop
 // stays fast without spawning one analysis per photo all at once.
