@@ -116,7 +116,14 @@ if (!fs.existsSync(LIB_JSON)) {
 // In-memory store for built zines, served at a real /zine/<id> URL so printing is reliable.
 const zineStore = {};
 let zineSeq = 0;
-const CHROME_BIN = (() => { const c = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"; try { return fs.existsSync(c) ? c : ""; } catch (e) { return ""; } })();
+// Chrome is used to open a chromeless zine window (/api/open) and to render a real PDF
+// (/api/zine-pdf). Empty string when not found — both features then degrade gracefully.
+// CHROME_BIN overrides the default (e.g. Chromium/Brave, or a non-standard install path).
+const CHROME_BIN = (() => {
+  if (process.env.CHROME_BIN) return process.env.CHROME_BIN;   // authoritative, like CLAUDE_BIN/MAGICK_BIN
+  const c = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  try { return fs.existsSync(c) ? c : ""; } catch (e) { return ""; }
+})();
 
 // Best-effort base URL for a phone on the same wi-fi to reach a served /zine/<id>.
 // A printed QR pointing at localhost would only open on this machine, so prefer the
@@ -566,6 +573,58 @@ async function inlineZine(html) {
   return html.replace(re, (full, f) => uri[decodeURIComponent(f)] || full);
 }
 
+// Render a local HTML file to a PDF via headless Chrome (--print-to-pdf); resolves to the
+// PDF bytes, or null on failure/timeout so the caller can degrade to the browser print flow.
+// Reuses CHROME_BIN (the same Chrome we launch for /api/open). We render a SELF-CONTAINED
+// file:// document (fonts + images inlined — see inlineZine), NOT the live /zine URL: pointing
+// headless Chrome back at this same server makes it fetch its own subresources over http and
+// then hang without exiting (the print finishes, the process doesn't). file:// needs no server
+// round-trip, so Chrome terminates cleanly — and it works even if the port's unreachable.
+// --headless prints via the print stylesheet (our @page size + the hidden .bar carry through).
+function renderPDF(fileURL, outPath, profileDir) {
+  return new Promise((resolve) => {
+    let child = null, done = false, poll = null, hardCap = null, lastSize = -1, stable = 0;
+    const cleanup = () => { clearInterval(poll); clearTimeout(hardCap); try { if (child) child.kill("SIGKILL"); } catch (e) {} };
+    const finish = (ok) => { if (done) return; done = true; cleanup();
+      if (!ok) return resolve(null);
+      try { resolve(fs.readFileSync(outPath)); } catch (e) { resolve(null); } };
+    // A finished .pdf ends with %%EOF; require the size to hold steady too, so we never
+    // read a half-written file. This is how we know the render is done.
+    const complete = () => {
+      let st; try { st = fs.statSync(outPath); } catch (e) { return false; }
+      if (!st.size || st.size !== lastSize) { lastSize = st.size; stable = 0; return false; }
+      if (++stable < 2) return false;                 // size unchanged across two polls (~0.5s)
+      try {
+        const fd = fs.openSync(outPath, "r"), buf = Buffer.alloc(32);
+        fs.readSync(fd, buf, 0, 32, Math.max(0, st.size - 32)); fs.closeSync(fd);
+        return /%%EOF/.test(buf.toString("latin1"));
+      } catch (e) { return false; }
+    };
+    try {
+      child = spawn(CHROME_BIN, [
+        "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
+        "--no-pdf-header-footer",                    // no printer URL/date margins baked into the PDF
+        "--user-data-dir=" + profileDir,
+        "--disable-background-networking", "--disable-component-update",  // quieter, fewer helper subprocesses
+        "--virtual-time-budget=15000",               // let the (data-URI) images decode before it prints
+        "--run-all-compositor-stages-before-draw",
+        "--print-to-pdf=" + outPath, fileURL,
+      ],
+      // stdio:"ignore" is load-bearing: Chrome is very chatty on stderr and forks helper
+      // subprocesses that inherit the pipes — with piped stdio the buffer fills and Chrome blocks.
+      { env: SPAWN_ENV, stdio: "ignore" });
+    } catch (e) { return resolve(null); }
+    // We poll for the finished PDF rather than waiting for Chrome to exit: headless Chrome
+    // reliably WRITES the file in a second or two but then often fails to terminate (a known
+    // headless quirk, environment-dependent). Once the file is complete we take it and reap
+    // Chrome — so we don't hang for the full timeout on machines where it never exits cleanly.
+    child.on("error", () => finish(false));
+    child.on("close", () => finish(fs.existsSync(outPath)));   // if it does exit, use the file
+    poll = setInterval(() => { if (complete()) finish(true); }, 250);
+    hardCap = setTimeout(() => finish(fs.existsSync(outPath)), 30000);
+  });
+}
+
 /* ---------------- routes ---------------- */
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
@@ -718,6 +777,39 @@ const server = http.createServer(async (req, res) => {
         "content-disposition": 'attachment; filename="' + base + '.html"'
       });
       return res.end(html);
+    }
+
+    // POST /api/zine-pdf -> { html, title } : render the built zine to a REAL PDF via
+    // headless Chrome (--print-to-pdf) and stream it back as a download. Degrades to JSON
+    // { ok:false, reason } (not a PDF) when Chrome is missing or the render fails, so the
+    // client can fall back to the reliable browser print flow. Matches the /api/open pattern.
+    if (req.method === "POST" && p === "/api/zine-pdf") {
+      const b = await body(req);
+      if (!b || typeof b.html !== "string" || b.html.length > 5000000) return json(res, 400, { error: "bad zine" });
+      if (!CHROME_BIN) return json(res, 200, { ok: false, reason: "no-chrome" });
+      // Render a self-contained copy (fonts + downscaled images inlined as data: URIs — same
+      // packaging as /api/zine-file) so Chrome needs no round-trip back to this server.
+      const html = await inlineZine(b.html);
+      const id = (zineSeq++).toString(36) + Math.random().toString(36).slice(2, 6);
+      const src = path.join(CACHE_DIR, "zine_" + id + ".html");
+      const out = path.join(CACHE_DIR, "zine_" + id + ".pdf");
+      // Chrome's --user-data-dir must live in a SHORT path: it creates a unix-domain
+      // "SingletonSocket" there, and macOS caps socket paths at ~104 chars — the deep .cache
+      // path (esp. under a git worktree) overflows it and Chrome hangs. Temp dir is short.
+      const prof = path.join(process.env.TMPDIR || "/tmp", "fnpdf_" + id);
+      let pdf = null;
+      try { fs.writeFileSync(src, html); pdf = await renderPDF("file://" + src, out, prof); } catch (e) {}
+      try { fs.rmSync(prof, { recursive: true, force: true }); } catch (e) {}
+      try { fs.rmSync(src, { force: true }); } catch (e) {}
+      try { fs.rmSync(out, { force: true }); } catch (e) {}
+      if (!pdf) return json(res, 200, { ok: false, reason: "render-failed" });
+      const base = (((typeof b.title === "string" && b.title) || "field notes")
+        .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60)) || "field-notes";
+      res.writeHead(200, {
+        "content-type": "application/pdf",
+        "content-disposition": 'attachment; filename="' + base + '.pdf"'
+      });
+      return res.end(pdf);
     }
 
     // POST /api/backfill -> fill missing trip/date on existing items from their image EXIF.
