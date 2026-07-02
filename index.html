@@ -254,6 +254,7 @@
   </span>
   <input class="zt-title" id="ztTitle" placeholder="cover title…" autocomplete="off" spellcheck="false">
   <label class="zt-check"><input type="checkbox" id="ztNums" checked> page #s</label>
+  <label class="zt-check" title="embed a QR on the cover that opens the flip-through web version"><input type="checkbox" id="ztQR" checked> qr to digital</label>
   <button class="zt-create" id="ztCreate" disabled>create zine →</button>
   <button class="zt-create" id="ztShare" disabled>save .html →</button>
   <span class="zt-link" id="ztBoard">make board</span>
@@ -313,6 +314,7 @@
 
 <script src="/lib/fabric.min.js"></script>
 <script src="/lib/leaflet.js"></script>
+<script src="/lib/qrcode.js"></script>
 <script>
 "use strict";
 
@@ -1454,7 +1456,9 @@ const PAPER={
 
 // Build the zine HTML for the current selection + format. Shared by "create zine" (print/open)
 // and "save .html" (self-contained download) so both use the exact same imposition/page order.
-function buildZineHTML(){
+// `qr` (an inline <svg> string, optional) bakes a scan-to-open code onto the cover;
+// omitted for the self-contained .html export, whose QR would point at a dead LAN URL.
+function buildZineHTML(qr){
   const chosen=items.filter(it=>it.status==="ready" && selectedIds.has(it.id));
   if(!chosen.length) return null;
   chosen.sort((a,b)=>(a.date||"9999").localeCompare(b.date||"9999"));   // chronological trip flow
@@ -1462,20 +1466,41 @@ function buildZineHTML(){
   const nums=document.getElementById("ztNums").checked;
   let html;
   if(zineFormat==="mini"){
-    html=buildMiniZine(chosen.slice(0,7), title, nums, "letter");
+    html=buildMiniZine(chosen.slice(0,7), title, nums, "letter", qr);
   } else if(zineFormat==="booklet"){
-    html=buildBooklet(chosen, title, nums, "letter");
+    html=buildBooklet(chosen, title, nums, "letter", qr);
   } else {
-    html=buildPagesZine(chosen, title, "letter");
+    html=buildPagesZine(chosen, title, "letter", qr);
   }
   return {html, title};
 }
-function createZine(){
-  const z=buildZineHTML();
+// Encode a scannable QR (inline SVG, crisp at print DPI) linking the paper to its digital
+// twin at `url`. Returns "" if the vendored lib is missing or encode fails (degrade, no QR).
+function qrSvgFor(url){
+  try{
+    if(typeof qrcode!=="function" || !url) return "";
+    const qr=qrcode(0,"M");   // type 0 = auto-fit the QR version to the URL length
+    qr.addData(url); qr.make();
+    return qr.createSvgTag({cellSize:4,margin:1,scalable:true});
+  }catch(e){ return ""; }
+}
+async function createZine(){
+  // Reserve the id client-side so the QR we bake onto the cover matches the URL the
+  // server will serve the zine at. Host is best-effort (LAN IP so a phone can reach it);
+  // if either the host lookup or the encode fails we simply build without a QR.
+  const zid=(Date.now().toString(36)+Math.random().toString(36).slice(2,6)).replace(/[^a-z0-9]/gi,"").slice(0,24);
+  let qr="";
+  if(document.getElementById("ztQR").checked){
+    try{
+      const h=await fetch("/api/host").then(r=>r.json());
+      if(h && h.base) qr=qrSvgFor(h.base.replace(/\/+$/,"")+"/zine/"+zid);
+    }catch(e){}
+  }
+  const z=buildZineHTML(qr);
   if(!z) return;
   // Build, then open the zine in its own chromeless Chrome app window (not a browser tab).
   ztCount.textContent="building zine…";
-  fetch("/api/zine",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({html:z.html,title:z.title})})
+  fetch("/api/zine",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({html:z.html,title:z.title,id:zid})})
     .then(r=>r.json())
     .then(j=>{
       if(!j||!j.id) throw new Error("no id");
@@ -1527,7 +1552,10 @@ const BASE_CSS=
   '.cv-brand{font-family:var(--sans);text-transform:lowercase;letter-spacing:.2em;color:var(--gray);}'+
   '.cv-place{font-family:var(--serif);font-weight:500;line-height:1.02;letter-spacing:.01em;}'+
   '.cv-dates{font-family:var(--serif);font-style:italic;color:var(--gray);}'+
-  '.cv-foot{font-family:var(--sans);text-transform:lowercase;letter-spacing:.14em;color:var(--gray);}';
+  '.cv-foot{font-family:var(--sans);text-transform:lowercase;letter-spacing:.14em;color:var(--gray);}'+
+  '.cv-qr{display:flex;flex-direction:column;align-items:flex-start;gap:5px;}'+
+  '.cv-qr svg{display:block;width:100%;height:auto;background:#fff;}'+
+  '.cv-qr-cap{font-family:var(--sans);text-transform:lowercase;letter-spacing:.08em;color:var(--gray);}';
 function doc(title, css, body){
   return '<!doctype html><html lang="en"><head><meta charset="utf-8">'+
     '<title>'+esc(title)+' — field notes</title>'+
@@ -1548,18 +1576,20 @@ function metaRows(it){
     '<div class="zrow"><span class="zlab">location · date</span><span class="zval">'+loc+'</span></div>'+
   '</div>';
 }
-function coverBlock(title, list){
+function coverBlock(title, list, qr){
   const range=dateRange(list);
   return '<div class="cv-brand">field notes</div>'+
     '<div class="cv-main"><div class="cv-place">'+esc(title)+'</div>'+
       (range?'<div class="cv-dates">'+esc(range)+'</div>':'')+'</div>'+
+    (qr?'<div class="cv-qr">'+qr+'<span class="cv-qr-cap">scan to flip through</span></div>':'')+
     '<div class="cv-foot">'+list.length+' reference'+(list.length===1?'':'s')+'</div>';
 }
 
 /* ---- format 1: editorial pages (one per page) ---- */
-function buildPagesZine(list, title, paper){
+function buildPagesZine(list, title, paper, qr){
   const pg=PAPER[paper]||PAPER.a4;
   const css=
+    '.cover .cv-qr{width:30mm;margin:18px 0;}.cover .cv-qr-cap{font-size:9.5px;}'+
     '@page{size:'+pg.css+';margin:0;}'+
     '.page{width:'+pg.portrait[0]+'mm;height:'+pg.portrait[1]+'mm;padding:20mm;display:flex;flex-direction:column;overflow:hidden;page-break-after:always;background:#fff;}'+
     '.page:last-child{page-break-after:auto;}'+
@@ -1572,7 +1602,7 @@ function buildPagesZine(list, title, paper){
     '.zpals{gap:12px;}.zsw{width:18px;height:18px;}.zhex{font-size:10.5px;}'+
     '@media screen{body{background:#8c8c8c;}.book{padding:64px 0 40px;}.page{margin:0 auto 28px;box-shadow:0 4px 28px rgba(0,0,0,.28);}}'+
     '@media print{.bar{display:none;}.page{margin:0;box-shadow:none;}}';
-  const cover='<section class="page cover">'+coverBlock(title,list)+'</section>';
+  const cover='<section class="page cover">'+coverBlock(title,list,qr)+'</section>';
   const pages=list.map(it=>'<section class="page ref"><div class="ref-img"><img src="'+imgURL(it)+'" alt=""></div>'+
     '<div class="ref-meta"><div class="zname">'+esc(it.name)+'</div>'+
     (it.description?'<div class="zdesc">'+esc(it.description)+'</div>':'')+metaRows(it)+'</div></section>').join("");
@@ -1581,7 +1611,7 @@ function buildPagesZine(list, title, paper){
 }
 
 /* ---- format 2: one-sheet mini-zine (fold + 1 cut, PocketMod imposition) ---- */
-function buildMiniZine(list, title, nums, paper){
+function buildMiniZine(list, title, nums, paper, qr){
   const pg=PAPER[paper]||PAPER.a4;
   // book pages: 1=cover, 2..8 = images[0..6]
   const img=i=>list[i];
@@ -1593,7 +1623,7 @@ function buildMiniZine(list, title, nums, paper){
     return num(n)+'<div class="mp-img"><img src="'+imgURL(it)+'"></div>'+
       '<div class="mp-cap"><span class="mp-nm">'+cap+'</span><span class="mp-dots">'+dots+'</span></div>';
   };
-  const panelCover=(n)=>num(n)+'<div class="mp-cover">'+coverBlock(title,list)+'</div>';
+  const panelCover=(n)=>num(n)+'<div class="mp-cover">'+coverBlock(title,list,qr)+'</div>';
   const panel=(inner,flip)=>'<div class="panel'+(flip?' flip':'')+'">'+inner+'</div>';
   // grid row-major (T1..T4, B1..B4). Top row rotated 180.
   // T1=pg7(img5) T2=pg6(img4) T3=pg5(img3) T4=pg4(img2) | B1=pg8(img6) B2=pg1(cover) B3=pg2(img0) B4=pg3(img1)
@@ -1612,6 +1642,7 @@ function buildMiniZine(list, title, nums, paper){
     '.mp-cover{height:100%;padding:7pt;display:flex;flex-direction:column;justify-content:center;gap:3pt;}'+
     '.mp-cover .cv-brand{font-size:6.5pt;}.mp-cover .cv-main{margin:0;}.mp-cover .cv-place{font-size:19pt;}'+
     '.mp-cover .cv-dates{font-size:8.5pt;margin-top:3pt;}.mp-cover .cv-foot{font-size:6pt;margin-top:4pt;}'+
+    '.mp-cover .cv-qr{width:15mm;margin-top:4pt;}.mp-cover .cv-qr-cap{font-size:4.5pt;line-height:1.1;letter-spacing:.05em;}'+
     '.guide{font-family:var(--sans);font-size:12px;color:#2a2a2a;max-width:760px;margin:26px auto;line-height:1.65;}'+
     '.guide h3{font-size:12px;letter-spacing:.05em;text-transform:lowercase;margin:0 0 8px;}'+
     '.guide ol{margin:0;padding-left:18px;}.guide li{margin:5px 0;}'+
@@ -1630,7 +1661,7 @@ function buildMiniZine(list, title, nums, paper){
 }
 
 /* ---- format 3: saddle-stitch booklet (double-sided, fold in half) ---- */
-function buildBooklet(list, title, nums, paper){
+function buildBooklet(list, title, nums, paper, qr){
   const pg=PAPER[paper]||PAPER.a4;
   // reading pages: 1=cover, 2..(1+N)=images, padded to a multiple of 4
   let pages=[{cover:true}].concat(list.map(it=>({it:it})));
@@ -1639,7 +1670,7 @@ function buildBooklet(list, title, nums, paper){
   const num=n=>nums?'<span class="pnum">'+n+'</span>':'';
   const pageHTML=(pg,n)=>{
     if(!pg||pg.blank) return '<div class="bpage blank">'+num(n)+'</div>';
-    if(pg.cover) return '<div class="bpage bcover">'+num(n)+coverBlock(title,list)+'</div>';
+    if(pg.cover) return '<div class="bpage bcover">'+num(n)+coverBlock(title,list,qr)+'</div>';
     const it=pg.it;
     return '<div class="bpage">'+num(n)+'<div class="bp-img"><img src="'+imgURL(it)+'"></div>'+
       '<div class="bp-meta"><div class="zname">'+esc(it.name)+'</div>'+
@@ -1660,6 +1691,7 @@ function buildBooklet(list, title, nums, paper){
     '.bpage:last-child{border-right:none;}'+
     '.bcover{justify-content:space-between;}.bcover .cv-main{margin:auto 0;}'+
     '.cv-brand{font-size:10px;}.cv-place{font-size:48px;}.cv-dates{font-size:18px;margin-top:10px;}.cv-foot{font-size:9px;}'+
+    '.bcover .cv-qr{width:26mm;margin:14px 0;}.bcover .cv-qr-cap{font-size:8px;}'+
     '.bp-img{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;border:1px solid var(--line);}'+
     '.bp-img img{max-width:100%;max-height:100%;object-fit:contain;display:block;}'+
     '.bp-meta{padding-top:12px;}.zname{font-size:20px;}.zdesc{font-size:12px;line-height:1.45;margin-top:6px;}'+
