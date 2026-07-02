@@ -14,6 +14,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 const crypto = require("crypto");
+const os = require("os");
 
 // md5 of a buffer, used to detect re-imported (byte-identical) photos
 function bufHash(buf) { return crypto.createHash("md5").update(buf).digest("hex"); }
@@ -123,6 +124,18 @@ const CHROME_BIN = (() => {
   const c = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   try { return fs.existsSync(c) ? c : ""; } catch (e) { return ""; }
 })();
+
+// Best-effort base URL for a phone on the same wi-fi to reach a served /zine/<id>.
+// A printed QR pointing at localhost would only open on this machine, so prefer the
+// first non-internal IPv4; fall back to localhost when there isn't one (degrade, don't throw).
+function lanBase() {
+  try {
+    const ifs = os.networkInterfaces();
+    for (const k of Object.keys(ifs)) for (const ni of ifs[k] || [])
+      if (ni.family === "IPv4" && !ni.internal) return "http://" + ni.address + ":" + PORT;
+  } catch (e) {}
+  return "http://localhost:" + PORT;
+}
 
 const SYSTEM_PROMPT = `You are helping an industrial designer build a moodboard from travel photographs. Look at the image and return ONLY a JSON object, no markdown, in this exact shape:
 {
@@ -720,6 +733,13 @@ const server = http.createServer(async (req, res) => {
       return res.end(z.html);
     }
 
+    // GET /api/host -> best-effort base URL for building a scannable QR to /zine/<id>.
+    // `lan` is false when we could only find localhost (reachable on this machine only).
+    if (req.method === "GET" && p === "/api/host") {
+      const base = lanBase();
+      return json(res, 200, { base, lan: !base.includes("localhost") });
+    }
+
     // GET /api/open?p=/zine/<id> -> open a zine in its own chromeless Chrome app window
     if (req.method === "GET" && p === "/api/open") {
       const target = url.searchParams.get("p") || "";
@@ -733,7 +753,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && p === "/api/zine") {
       const b = await body(req);
       if (!b || typeof b.html !== "string" || b.html.length > 5000000) return json(res, 400, { error: "bad zine" });
-      const id = (zineSeq++).toString(36) + Math.random().toString(36).slice(2, 6);
+      // Accept a client-chosen id so a QR baked into the printed page can match the URL we
+      // serve it at; sanitise it (path-safe, non-clobbering) and fall back to a server id.
+      const id = (typeof b.id === "string" && /^[a-z0-9]{4,24}$/i.test(b.id)) ? b.id
+        : ((zineSeq++).toString(36) + Math.random().toString(36).slice(2, 6));
       zineStore[id] = { html: b.html, title: typeof b.title === "string" ? b.title : "" };
       const ids = Object.keys(zineStore);
       while (ids.length > 20) delete zineStore[ids.shift()];
