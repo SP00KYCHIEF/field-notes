@@ -185,6 +185,25 @@
   .map-pop .map-pop-name{font-family:var(--serif);font-size:14px;color:var(--ink);margin-top:6px;line-height:1.3;}
   .map-pop .map-pop-place{font-family:var(--sans);font-size:10.5px;text-transform:lowercase;letter-spacing:.04em;color:var(--gray);margin-top:2px;}
 
+  /* field report — "a year in color": chronological palette ribbons built from stored colors+date */
+  #reportStart{right:420px;}
+  .report-overlay{display:none;position:fixed;inset:0;background:var(--bg);z-index:50;flex-direction:column;}
+  .report-overlay.open{display:flex;}
+  .report-bar{display:flex;align-items:baseline;gap:20px;padding:16px 24px;border-bottom:1px solid var(--line);}
+  .report-bar .report-title{font-family:var(--serif);font-style:italic;font-size:20px;color:var(--ink);}
+  .report-bar .report-sub{font-family:var(--sans);font-size:11.5px;text-transform:lowercase;letter-spacing:.04em;color:var(--gray);}
+  .report-bar .report-close{margin-left:auto;}
+  .report-scroll{flex:1;overflow-y:auto;padding:44px 40px 90px;}
+  .report-poster{max-width:900px;margin:0 auto;}
+  .report-year{font-family:var(--serif);font-size:15px;color:var(--gray);letter-spacing:.02em;margin:30px 0 16px;padding-bottom:7px;border-bottom:1px solid var(--line);}
+  .report-year:first-child{margin-top:0;}
+  .rr{display:flex;align-items:center;gap:18px;margin:0 0 13px;}
+  .rr-label{font-family:var(--sans);font-size:11px;text-transform:lowercase;letter-spacing:.06em;color:var(--ink);width:112px;flex-shrink:0;text-align:right;}
+  .rr-label .rr-count{color:#A8A8A8;margin-left:5px;letter-spacing:.04em;}
+  .rr-bar{flex:1;display:flex;height:54px;border:1px solid var(--line);overflow:hidden;background:#FAFAFA;}
+  .rr-seg{height:100%;min-width:2px;}
+  .report-empty{font-family:var(--serif);font-style:italic;font-size:16px;color:var(--gray);text-align:center;margin-top:80px;}
+
   /* surprise me: rightmost header affordance */
   #surpriseStart{right:560px;}
 
@@ -224,6 +243,7 @@
     <button class="zine-start" id="zineStart">make a zine →</button>
     <button class="zine-start" id="boardStart">make a board →</button>
     <button class="zine-start" id="mapStart">on the map →</button>
+    <button class="zine-start" id="reportStart">field report →</button>
     <button class="zine-start" id="surpriseStart">surprise me →</button>
   </header>
 
@@ -315,6 +335,15 @@
     <div class="map-empty" id="mapEmpty" style="display:none;"></div>
     <div class="map-note" id="mapNote" style="display:none;"></div>
   </div>
+</div>
+
+<div class="report-overlay" id="reportOverlay">
+  <div class="report-bar">
+    <span class="report-title">a year in color</span>
+    <span class="report-sub" id="reportSub"></span>
+    <span class="board-link report-close" id="reportClose">close</span>
+  </div>
+  <div class="report-scroll" id="reportBody"></div>
 </div>
 
 <script src="/lib/fabric.min.js"></script>
@@ -876,15 +905,15 @@ function renderEvents(){
   if(untagged) host.appendChild(mkEv("untagged", untagged, NOEVENT));
 }
 
-// Aggregate every photo's palette in a trip into a representative set of colors,
-// each weighted by how often it appears. Near-identical hues are merged into one
-// bucket (8 levels/channel) and the bucket's average color is returned, so the
-// strip shows true colors, not bin centers. Sorted for display by hue→lightness.
-function tripPalette(name, maxSwatches){
+// Aggregate a set of photos' palettes into a representative set of colors, each
+// weighted by how often it appears. Near-identical hues are merged into one bucket
+// (8 levels/channel) and the bucket's average color is returned, so the strip shows
+// true colors, not bin centers. Sorted for display by hue→lightness. Shared by the
+// trip palette strip and the field report's monthly ribbons.
+function paletteOf(list, maxSwatches){
   maxSwatches = maxSwatches || 14;
   const bins = new Map();
-  items.forEach(it=>{
-    if(it.status!=="ready" || (it.folder||"").trim()!==name) return;
+  list.forEach(it=>{
     (it.colors||[]).forEach(hex=>{
       const h=(""+hex).replace("#",""); if(h.length<6) return;
       const r=parseInt(h.slice(0,2),16), g=parseInt(h.slice(2,4),16), b=parseInt(h.slice(4,6),16);
@@ -904,6 +933,9 @@ function tripPalette(name, maxSwatches){
   arr.forEach(x=>{ x.pct=x.n/total; });
   arr.sort((a,b)=>{ const A=hexToHsl(a.hex),B=hexToHsl(b.hex); return (A.h-B.h)||(A.l-B.l); });
   return arr;
+}
+function tripPalette(name, maxSwatches){
+  return paletteOf(items.filter(it=>it.status==="ready" && (it.folder||"").trim()===name), maxSwatches);
 }
 
 // Show the open trip's palette above the grid; hide it for "all" / "unsorted".
@@ -1275,6 +1307,7 @@ overlay.addEventListener("click", e=>{ if(e.target===overlay) closeModal(); });
 document.addEventListener("keydown", e=>{
   if(e.key!=="Escape") return;
   if(overlay.classList.contains("open")) closeModal();
+  else if(document.getElementById("reportOverlay").classList.contains("open")) closeReport();
   else if(document.getElementById("mapOverlay").classList.contains("open")) closeMap();
   else if(selecting) exitSelect();
 });
@@ -1425,6 +1458,52 @@ function renderMapPins(){
 }
 document.getElementById("mapStart").addEventListener("click",openMap);
 document.getElementById("mapClose").addEventListener("click",closeMap);
+
+/* ---------- field report: "a year in color" — chronological palette ribbons ---------- */
+function openReport(){ document.getElementById("reportOverlay").classList.add("open"); renderReport(); }
+function closeReport(){ document.getElementById("reportOverlay").classList.remove("open"); }
+function monthKey(iso){ const m=/^(\d{4})-(\d{2})/.exec(iso||""); return m?(m[1]+"-"+m[2]):null; }
+// One labelled row: month/period name + a color ribbon (segments weighted by frequency).
+function reportRow(label, list){
+  const row=document.createElement("div"); row.className="rr";
+  const lab=document.createElement("div"); lab.className="rr-label"; lab.textContent=label;
+  const c=document.createElement("span"); c.className="rr-count"; c.textContent="· "+list.length; lab.appendChild(c);
+  const bar=document.createElement("div"); bar.className="rr-bar"; bar.setAttribute("aria-label",label+" palette");
+  paletteOf(list,28).forEach(p=>{
+    const s=document.createElement("div"); s.className="rr-seg";
+    s.style.flexGrow=p.n; s.style.background=p.hex; s.title=p.hex+" · "+Math.round(p.pct*100)+"%";
+    bar.appendChild(s);
+  });
+  row.appendChild(lab); row.appendChild(bar); return row;
+}
+// Bucket every dated reference by month, aggregate its palette into a ribbon, and stack
+// them chronologically under year headings. Sparse/undated data degrades: undated photos
+// get their own trailing row, and an empty library shows a gentle note.
+function renderReport(){
+  const body=document.getElementById("reportBody"), sub=document.getElementById("reportSub");
+  const ready=items.filter(it=>it.status==="ready");
+  body.innerHTML="";
+  if(!ready.length){ sub.textContent=""; const e=document.createElement("div"); e.className="report-empty";
+    e.textContent="nothing collected yet — drop some references first"; body.appendChild(e); return; }
+  const buckets=new Map(); const undated=[];
+  ready.forEach(it=>{ const k=monthKey(it.date); if(k){ if(!buckets.has(k)) buckets.set(k,[]); buckets.get(k).push(it); } else undated.push(it); });
+  const keys=[...buckets.keys()].sort();
+  sub.textContent = ready.length+" reference"+(ready.length===1?"":"s")+(keys.length?(" · "+dateRange(ready)):" · undated");
+  const poster=document.createElement("div"); poster.className="report-poster";
+  let year=null;
+  keys.forEach(k=>{
+    const y=k.slice(0,4), mm=+k.slice(5,7);
+    if(y!==year){ year=y; const h=document.createElement("div"); h.className="report-year"; h.textContent=y; poster.appendChild(h); }
+    poster.appendChild(reportRow(MONTHS[mm-1], buckets.get(k)));
+  });
+  if(undated.length){
+    const h=document.createElement("div"); h.className="report-year"; h.textContent="undated"; poster.appendChild(h);
+    poster.appendChild(reportRow("—", undated));
+  }
+  body.appendChild(poster);
+}
+document.getElementById("reportStart").addEventListener("click",openReport);
+document.getElementById("reportClose").addEventListener("click",closeReport);
 
 /* ---------- surprise me: jump to a random reference ---------- */
 function surprise(){
