@@ -214,6 +214,27 @@
   .tl-row-sw span{width:15px;height:15px;border:1px solid var(--line);}
   .tl-empty{font-family:var(--serif);font-style:italic;font-size:15px;color:var(--gray);text-align:center;padding:40px 0;}
 
+  /* compare view — selected references side by side, fields aligned in a grid */
+  .cmp-overlay{display:none;position:fixed;inset:0;background:var(--bg);z-index:70;flex-direction:column;}
+  .cmp-overlay.open{display:flex;}
+  .cmp-bar{display:flex;align-items:center;gap:22px;padding:16px 24px;border-bottom:1px solid var(--line);}
+  .cmp-bar .cmp-title{font-family:var(--serif);font-size:20px;color:var(--ink);}
+  .cmp-bar .cmp-count{font-family:var(--sans);font-size:11.5px;text-transform:lowercase;letter-spacing:.04em;color:var(--gray);}
+  .cmp-bar .cmp-close{margin-left:auto;}
+  .cmp-scroll{flex:1;overflow:auto;padding:28px 24px 60px;}
+  .cmp-grid{display:grid;gap:0 22px;align-items:start;}
+  .cmp-cell{padding:11px 0;border-bottom:1px solid var(--line);min-width:0;}
+  .cmp-lab{font-family:var(--sans);font-size:9.5px;text-transform:lowercase;letter-spacing:.12em;color:#A8A8A8;align-self:center;}
+  .cmp-img{border-bottom:none;padding-top:0;}
+  .cmp-img img{width:100%;height:220px;object-fit:contain;background:#FAFAFA;border:1px solid var(--line);display:block;cursor:pointer;}
+  .cmp-name{font-family:var(--serif);font-style:italic;font-size:19px;color:var(--ink);line-height:1.2;}
+  .cmp-val{font-family:var(--sans);font-size:12.5px;letter-spacing:.02em;color:var(--ink);text-transform:lowercase;}
+  .cmp-val.muted{color:#A8A8A8;}
+  .cmp-sw{display:flex;flex-wrap:wrap;gap:8px;}
+  .cmp-sw .box{display:flex;flex-direction:column;align-items:center;gap:4px;}
+  .cmp-sw .box i{width:22px;height:22px;border:1px solid var(--line);display:block;}
+  .cmp-sw .box em{font-family:var(--sans);font-size:9px;font-style:normal;color:var(--gray);letter-spacing:.03em;}
+
   /* select mode */
   body.selecting .dropzone{display:none;}
   .card.selected{outline:2px solid var(--ink);outline-offset:-1px;}
@@ -291,6 +312,7 @@
   <button class="zt-create" id="ztCreate" disabled>create zine →</button>
   <button class="zt-create" id="ztShare" disabled>save .html →</button>
   <span class="zt-link" id="ztBoard">make board</span>
+  <span class="zt-link" id="ztCompare">compare</span>
   <span class="zt-link" id="ztCancel">cancel</span>
 </div>
 
@@ -352,6 +374,15 @@
     <span class="board-link tl-close" id="tlClose">close</span>
   </div>
   <div class="tl-scroll"><div class="tl-inner" id="tlInner"></div></div>
+</div>
+
+<div class="cmp-overlay" id="cmpOverlay">
+  <div class="cmp-bar">
+    <span class="cmp-title">compare</span>
+    <span class="cmp-count" id="cmpCount"></span>
+    <span class="board-link cmp-close" id="cmpClose">close</span>
+  </div>
+  <div class="cmp-scroll"><div class="cmp-grid" id="cmpGrid"></div></div>
 </div>
 
 <script src="/lib/fabric.min.js"></script>
@@ -1295,6 +1326,7 @@ document.addEventListener("keydown", e=>{
   if(overlay.classList.contains("open")) closeModal();
   else if(document.getElementById("mapOverlay").classList.contains("open")) closeMap();
   else if(document.getElementById("tlOverlay").classList.contains("open")) closeTimeline();
+  else if(document.getElementById("cmpOverlay").classList.contains("open")) closeCompare();
   else if(selecting) exitSelect();
 });
 document.addEventListener("keydown", e=>{
@@ -1517,6 +1549,40 @@ function openTimeline(){
 function closeTimeline(){ document.getElementById("tlOverlay").classList.remove("open"); }
 document.getElementById("timelineStart").addEventListener("click",openTimeline);
 document.getElementById("tlClose").addEventListener("click",closeTimeline);
+
+/* ---------- compare: selected references side by side, fields aligned ---------- */
+// Build one grid of rows (image, name, palette, materials, category·mood, date, trip),
+// each row a label cell + one cell per chosen reference, so a CSS grid keeps every
+// field aligned across columns for eyeball comparison. Entered from the selection model.
+function cmpCell(cls){ const d=document.createElement("div"); d.className="cmp-cell "+cls; return d; }
+function openCompare(){
+  const chosen=[...selectedIds].map(id=>items.find(x=>x.id===id)).filter(it=>it&&it.status==="ready");
+  if(chosen.length<2){ ztCount.textContent="select 2+ to compare"; ztCount.classList.add("warn"); return; }
+  const grid=document.getElementById("cmpGrid"); grid.innerHTML="";
+  grid.style.gridTemplateColumns="72px repeat("+chosen.length+", minmax(190px, 1fr))";
+  document.getElementById("cmpCount").textContent=chosen.length+" references";
+  // emit one grid row: a label cell then a builder(it) cell per reference
+  const row=(label, builder, labelCls, cellCls)=>{
+    const l=cmpCell("cmp-lab "+(labelCls||"")); l.textContent=label; grid.appendChild(l);
+    chosen.forEach(it=>{ const c=cmpCell(cellCls||""); builder(c,it); grid.appendChild(c); });
+  };
+  row("", (c,it)=>{ const im=document.createElement("img"); im.src=imgSrc(it,900); im.alt=it.name||""; im.addEventListener("click",()=>{ closeCompare(); openModal(it.id); }); c.appendChild(im); }, "cmp-img", "cmp-img");
+  row("name", (c,it)=>{ c.className="cmp-cell cmp-name"; c.textContent=it.name||"untitled"; });
+  row("palette", (c,it)=>{
+    const w=document.createElement("div"); w.className="cmp-sw";
+    (it.colors||[]).forEach(hex=>{ const b=document.createElement("div"); b.className="box"; const i=document.createElement("i"); i.style.background=hex; const e=document.createElement("em"); e.textContent=hex; b.appendChild(i); b.appendChild(e); w.appendChild(b); });
+    if(!(it.colors||[]).length){ w.innerHTML='<span class="cmp-val muted">—</span>'; }
+    c.appendChild(w);
+  });
+  row("materials", (c,it)=>{ c.className="cmp-cell cmp-val"+((it.materials||[]).length?"":" muted"); c.textContent=(it.materials||[]).length?it.materials.join(", "):"—"; });
+  row("category · mood", (c,it)=>{ c.className="cmp-cell cmp-val"; c.textContent=(it.category||"—")+" · "+(it.mood||"—"); });
+  row("date", (c,it)=>{ const d=fmtDate(it.date,true); c.className="cmp-cell cmp-val"+(d?"":" muted"); c.textContent=d||"undated"; });
+  row("trip", (c,it)=>{ const f=(it.folder||"").trim(); c.className="cmp-cell cmp-val"+(f?"":" muted"); c.textContent=f||"—"; });
+  document.getElementById("cmpOverlay").classList.add("open");
+}
+function closeCompare(){ document.getElementById("cmpOverlay").classList.remove("open"); }
+document.getElementById("ztCompare").addEventListener("click",openCompare);
+document.getElementById("cmpClose").addEventListener("click",closeCompare);
 document.getElementById("ztCancel").addEventListener("click", exitSelect);
 document.getElementById("ztClear").addEventListener("click", ()=>{
   selectedIds.clear();
