@@ -235,6 +235,32 @@
   .cmp-sw .box i{width:22px;height:22px;border:1px solid var(--line);display:block;}
   .cmp-sw .box em{font-family:var(--sans);font-size:9px;font-style:normal;color:var(--gray);letter-spacing:.03em;}
 
+  /* pivot view — a material × color cross-tab you click into */
+  .pv-overlay{display:none;position:fixed;inset:0;background:var(--bg);z-index:50;flex-direction:column;}
+  .pv-overlay.open{display:flex;}
+  .pv-bar{display:flex;align-items:center;gap:22px;padding:16px 24px;border-bottom:1px solid var(--line);}
+  .pv-bar .pv-title{font-family:var(--serif);font-size:20px;color:var(--ink);}
+  .pv-bar .pv-hint{font-family:var(--sans);font-size:11.5px;text-transform:lowercase;letter-spacing:.04em;color:var(--gray);}
+  .pv-bar .pv-close{margin-left:auto;}
+  .pv-scroll{flex:1;overflow:auto;padding:28px 24px 60px;}
+  .pv-inner{max-width:100%;}
+  .pv-note{font-family:var(--sans);font-size:11px;text-transform:lowercase;letter-spacing:.03em;color:#A8A8A8;margin-bottom:16px;}
+  .pv-table{border-collapse:collapse;font-family:var(--sans);}
+  .pv-table th,.pv-table td{border:1px solid var(--line);text-align:center;font-weight:400;}
+  .pv-corner{font-size:9.5px;text-transform:lowercase;letter-spacing:.08em;color:#A8A8A8;text-align:left;padding:8px 10px;white-space:nowrap;}
+  .pv-colh{padding:8px 6px;min-width:52px;}
+  .pv-colh .sw{width:16px;height:16px;border:1px solid var(--line);margin:0 auto 5px;}
+  .pv-colh .nm{font-size:9.5px;text-transform:lowercase;letter-spacing:.04em;color:var(--gray);}
+  .pv-rowh{text-align:left;padding:8px 12px;font-size:12.5px;letter-spacing:.02em;color:var(--ink);text-transform:lowercase;white-space:nowrap;}
+  .pv-cell{font-size:12.5px;color:var(--ink);padding:8px 6px;min-width:52px;}
+  .pv-cell.z{color:#D8D8D8;}
+  .pv-colh.click,.pv-rowh.click,.pv-cell.hit{cursor:pointer;}
+  .pv-cell.hit:hover{outline:2px solid var(--ink);outline-offset:-2px;}
+  .pv-colh.click:hover .nm,.pv-rowh.click:hover{color:var(--ink);text-decoration:underline;text-underline-offset:2px;}
+  .pv-tot{background:#FAFAFA;color:var(--gray);}
+  .pv-tot.pv-rowh,.pv-corner.pv-tot{color:var(--gray);}
+  .pv-empty{font-family:var(--serif);font-style:italic;font-size:15px;color:var(--gray);padding:30px 0;}
+
   /* select mode */
   body.selecting .dropzone{display:none;}
   .card.selected{outline:2px solid var(--ink);outline-offset:-1px;}
@@ -273,6 +299,7 @@
       <button class="zine-start" id="boardStart">make a board →</button>
       <button class="zine-start" id="mapStart">on the map →</button>
       <button class="zine-start" id="timelineStart">timeline →</button>
+      <button class="zine-start" id="pivotStart">pivot →</button>
     </div>
   </header>
 
@@ -383,6 +410,15 @@
     <span class="board-link cmp-close" id="cmpClose">close</span>
   </div>
   <div class="cmp-scroll"><div class="cmp-grid" id="cmpGrid"></div></div>
+</div>
+
+<div class="pv-overlay" id="pvOverlay">
+  <div class="pv-bar">
+    <span class="pv-title">pivot</span>
+    <span class="pv-hint">material × color</span>
+    <span class="board-link pv-close" id="pvClose">close</span>
+  </div>
+  <div class="pv-scroll"><div class="pv-inner" id="pvInner"></div></div>
 </div>
 
 <script src="/lib/fabric.min.js"></script>
@@ -1327,6 +1363,7 @@ document.addEventListener("keydown", e=>{
   else if(document.getElementById("mapOverlay").classList.contains("open")) closeMap();
   else if(document.getElementById("tlOverlay").classList.contains("open")) closeTimeline();
   else if(document.getElementById("cmpOverlay").classList.contains("open")) closeCompare();
+  else if(document.getElementById("pvOverlay").classList.contains("open")) closePivot();
   else if(selecting) exitSelect();
 });
 document.addEventListener("keydown", e=>{
@@ -1583,6 +1620,87 @@ function openCompare(){
 function closeCompare(){ document.getElementById("cmpOverlay").classList.remove("open"); }
 document.getElementById("ztCompare").addEventListener("click",openCompare);
 document.getElementById("cmpClose").addEventListener("click",closeCompare);
+
+/* ---------- pivot: a material × color-family cross-tab you can click into ---------- */
+// Distinct from the group-by toggle (which sections the grid along ONE axis): this is
+// the 2-axis matrix. Cell = # references carrying that material AND that colour family;
+// clicking a cell/row/col sets the matching filters and drops you back on the grid so
+// the visible cards equal the number you clicked (references with several materials or
+// colours are counted in each relevant cell, hence cell sums can exceed the totals).
+function hexA(hex,a){ const h=(hex||"").replace("#",""); if(h.length<6) return "transparent";
+  return "rgba("+parseInt(h.slice(0,2),16)+","+parseInt(h.slice(2,4),16)+","+parseInt(h.slice(4,6),16)+","+a+")"; }
+// jump from the matrix onto the filtered grid: replace material/color filters, keep nothing else
+function pivotInto(mat,fam){
+  Object.values(filters).forEach(s=>s.clear());
+  if(mat) filters.material.add(mat);
+  if(fam) filters.color.add(fam);
+  dupMode=false; groupMode="none";
+  closePivot(); render();
+}
+function openPivot(){
+  const host=document.getElementById("pvInner"); host.innerHTML="";
+  document.getElementById("pvOverlay").classList.add("open");
+  const ready=items.filter(it=>it.status==="ready").map(it=>({
+    mats:[...new Set((it.materials||[]).map(m=>(""+m).trim().toLowerCase()).filter(Boolean))],
+    fams:[...new Set((it.colors||[]).map(colorFamily))]
+  }));
+  const mats=[...new Set(ready.flatMap(r=>r.mats))].sort();
+  const fams=FAMILY_ORDER.filter(f=>ready.some(r=>r.fams.includes(f)));
+  if(!mats.length || !fams.length){ const e=document.createElement("div"); e.className="pv-empty"; e.textContent="need references tagged with both materials and colors to pivot"; host.appendChild(e); return; }
+
+  // counts[mat][fam]; plus per-material and per-family unique-reference totals
+  const counts={}, rowTot={}, colTot={};
+  mats.forEach(m=>{ counts[m]={}; fams.forEach(f=>counts[m][f]=0); rowTot[m]=0; });
+  fams.forEach(f=>colTot[f]=0);
+  ready.forEach(r=>{
+    r.mats.forEach(m=>{ if(m in rowTot) rowTot[m]++; });
+    r.fams.forEach(f=>{ if(f in colTot) colTot[f]++; });
+    r.mats.forEach(m=>{ if(!(m in counts)) return; r.fams.forEach(f=>{ if(f in counts[m]) counts[m][f]++; }); });
+  });
+  let max=1; mats.forEach(m=>fams.forEach(f=>{ if(counts[m][f]>max) max=counts[m][f]; }));
+
+  const note=document.createElement("div"); note.className="pv-note";
+  note.textContent="click a cell, a material row, or a color column to filter the grid · a reference with several materials or colors is counted in each";
+  host.appendChild(note);
+
+  const tbl=document.createElement("table"); tbl.className="pv-table";
+  const thead=document.createElement("thead"); const hr=document.createElement("tr");
+  const corner=document.createElement("th"); corner.className="pv-corner"; corner.textContent="material ↓ / color →"; hr.appendChild(corner);
+  fams.forEach(f=>{
+    const th=document.createElement("th"); th.className="pv-colh click";
+    const sw=document.createElement("div"); sw.className="sw"; sw.style.background=FAMILY_SWATCH[f]||"#ccc";
+    const nm=document.createElement("div"); nm.className="nm"; nm.textContent=f;
+    th.appendChild(sw); th.appendChild(nm); th.title="filter by "+f;
+    th.addEventListener("click",()=>pivotInto(null,f)); hr.appendChild(th);
+  });
+  const totH=document.createElement("th"); totH.className="pv-colh pv-corner pv-tot"; totH.textContent="any"; hr.appendChild(totH);
+  thead.appendChild(hr); tbl.appendChild(thead);
+
+  const tbody=document.createElement("tbody");
+  mats.forEach(m=>{
+    const tr=document.createElement("tr");
+    const rh=document.createElement("th"); rh.className="pv-rowh click"; rh.textContent=m; rh.title="filter by "+m;
+    rh.addEventListener("click",()=>pivotInto(m,null)); tr.appendChild(rh);
+    fams.forEach(f=>{
+      const c=counts[m][f];
+      const td=document.createElement("td"); td.className="pv-cell"+(c?" hit":" z"); td.textContent=c||"·";
+      if(c){ td.style.background=hexA(FAMILY_SWATCH[f], 0.12+0.5*(c/max)); td.title=c+" · "+m+" × "+f;
+        td.addEventListener("click",()=>pivotInto(m,f)); }
+      tr.appendChild(td);
+    });
+    const rt=document.createElement("td"); rt.className="pv-cell pv-tot"; rt.textContent=rowTot[m]; tr.appendChild(rt);
+    tbody.appendChild(tr);
+  });
+  const ftr=document.createElement("tr");
+  const fh=document.createElement("th"); fh.className="pv-rowh pv-tot"; fh.textContent="any"; ftr.appendChild(fh);
+  fams.forEach(f=>{ const td=document.createElement("td"); td.className="pv-cell pv-tot"; td.textContent=colTot[f]; ftr.appendChild(td); });
+  const gt=document.createElement("td"); gt.className="pv-cell pv-tot"; gt.textContent=ready.length; ftr.appendChild(gt);
+  tbody.appendChild(ftr);
+  tbl.appendChild(tbody); host.appendChild(tbl);
+}
+function closePivot(){ document.getElementById("pvOverlay").classList.remove("open"); }
+document.getElementById("pivotStart").addEventListener("click",openPivot);
+document.getElementById("pvClose").addEventListener("click",closePivot);
 document.getElementById("ztCancel").addEventListener("click", exitSelect);
 document.getElementById("ztClear").addEventListener("click", ()=>{
   selectedIds.clear();
