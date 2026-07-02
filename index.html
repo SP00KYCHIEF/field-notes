@@ -185,6 +185,9 @@
   .map-pop .map-pop-name{font-family:var(--serif);font-size:14px;color:var(--ink);margin-top:6px;line-height:1.3;}
   .map-pop .map-pop-place{font-family:var(--sans);font-size:10.5px;text-transform:lowercase;letter-spacing:.04em;color:var(--gray);margin-top:2px;}
 
+  /* surprise me: rightmost header affordance */
+  #surpriseStart{right:560px;}
+
   /* select mode */
   body.selecting .dropzone{display:none;}
   .card.selected{outline:2px solid var(--ink);outline-offset:-1px;}
@@ -221,6 +224,7 @@
     <button class="zine-start" id="zineStart">make a zine →</button>
     <button class="zine-start" id="boardStart">make a board →</button>
     <button class="zine-start" id="mapStart">on the map →</button>
+    <button class="zine-start" id="surpriseStart">surprise me →</button>
   </header>
 
   <div class="dropzone" id="dropzone">
@@ -1421,6 +1425,20 @@ function renderMapPins(){
 }
 document.getElementById("mapStart").addEventListener("click",openMap);
 document.getElementById("mapClose").addEventListener("click",closeMap);
+
+/* ---------- surprise me: jump to a random reference ---------- */
+function surprise(){
+  const pool=items.filter(it=>it.status==="ready");
+  const btn=document.getElementById("surpriseStart");
+  if(!pool.length){                                   // nothing to open yet — say so, then reset
+    const t=btn.textContent; btn.textContent="nothing to surprise you with yet";
+    clearTimeout(btn._t); btn._t=setTimeout(()=>{ btn.textContent=t; },1700);
+    return;
+  }
+  openModal(pool[Math.floor(Math.random()*pool.length)].id);
+}
+document.getElementById("surpriseStart").addEventListener("click",surprise);
+
 document.getElementById("ztCancel").addEventListener("click", exitSelect);
 document.getElementById("ztClear").addEventListener("click", ()=>{
   selectedIds.clear();
