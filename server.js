@@ -443,8 +443,8 @@ async function detectTripAndDate(absPath) {
   try {
     const m = await readPhotoMeta(absPath);
     const trip = await reverseGeocode(m.lat, m.lon);
-    return { trip, date: m.date };
-  } catch (e) { return { trip: "", date: "" }; }
+    return { trip, date: m.date, lat: m.lat, lon: m.lon };
+  } catch (e) { return { trip: "", date: "", lat: null, lon: null }; }
 }
 
 // API fallback (only if ANTHROPIC_API_KEY is set AND the CLI is unavailable).
@@ -705,10 +705,12 @@ const server = http.createServer(async (req, res) => {
       for (const it of lib) {
         const needTrip = !(it.folder || "").trim();
         const needDate = it.date === undefined || it.date === null;
-        if (!needTrip && !needDate) continue;
+        const needCoords = it.lat === undefined;   // records from before the map view lack coords entirely
+        if (!needTrip && !needDate && !needCoords) continue;
         const abs = path.join(LIB_DIR, it.file);
-        if (!fs.existsSync(abs)) { if (it.date === undefined) it.date = ""; continue; }
+        if (!fs.existsSync(abs)) { if (it.date === undefined) it.date = ""; if (needCoords) { it.lat = null; it.lon = null; } continue; }
         const m = await readPhotoMeta(abs);
+        if (needCoords) { it.lat = m.lat != null ? m.lat : null; it.lon = m.lon != null ? m.lon : null; }
         if (needDate) it.date = m.date || "";
         if (needTrip) {
           const city = await reverseGeocode(m.lat, m.lon);
@@ -813,7 +815,11 @@ const server = http.createServer(async (req, res) => {
       const folder = (prev && prev.folder) ? prev.folder : (auto.trip || "");
       const date = (prev && prev.date) ? prev.date : (auto.date || "");
       const event = (prev && prev.event) ? prev.event : "";   // events are tagged by hand, never auto
-      const record = { id, file: displayFile, folder, event, date, hash: sig, phash, ...meta, created: new Date().toISOString() };
+      // GPS coords power the map view. Auto-detected from EXIF; fall back to a prior
+      // value so a failed re-detect (or a non-EXIF re-add) can't drop an existing pin.
+      const lat = (auto.lat != null) ? auto.lat : (prev && prev.lat != null ? prev.lat : null);
+      const lon = (auto.lon != null) ? auto.lon : (prev && prev.lon != null ? prev.lon : null);
+      const record = { id, file: displayFile, folder, event, date, lat, lon, hash: sig, phash, ...meta, created: new Date().toISOString() };
       lib = lib.filter(x => x.id !== id);
       lib.unshift(record);
       writeLib(lib);
