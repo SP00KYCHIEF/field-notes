@@ -251,6 +251,7 @@
     <span class="zf active" data-fmt="pages">pages</span>
     <span class="zf" data-fmt="mini">mini-zine</span>
     <span class="zf" data-fmt="booklet">booklet</span>
+    <span class="zf" data-fmt="flip">flip-through</span>
   </span>
   <input class="zt-title" id="ztTitle" placeholder="cover title…" autocomplete="off" spellcheck="false">
   <label class="zt-check"><input type="checkbox" id="ztNums" checked> page #s</label>
@@ -1329,6 +1330,8 @@ function updateZineCount(){
   } else if(zineFormat==="booklet"){
     const pages=n+1, padded=Math.ceil(pages/4)*4, sheets=padded/4, blanks=padded-pages;
     txt=n+" selected · "+sheets+" sheet"+(sheets===1?"":"s")+(blanks?" · "+blanks+" blank":"");
+  } else if(zineFormat==="flip"){
+    txt=n+" selected · "+(n+1)+" pages · flip-through";
   } else {
     txt=n+" selected · "+(n+1)+" pages";
   }
@@ -1465,6 +1468,8 @@ function buildZineHTML(){
     html=buildMiniZine(chosen.slice(0,7), title, nums, "letter");
   } else if(zineFormat==="booklet"){
     html=buildBooklet(chosen, title, nums, "letter");
+  } else if(zineFormat==="flip"){
+    html=buildFlipZine(chosen, title, nums);
   } else {
     html=buildPagesZine(chosen, title, "letter");
   }
@@ -1674,6 +1679,69 @@ function buildBooklet(list, title, nums, paper){
     '</ol></div>';
   return doc(title, css, bar(P+' pages · '+S+' sheet'+(S===1?'':'s')+' double-sided · “Save as PDF”, then fold + staple')+
     '<main class="book">'+sheets+guide+'</main>');
+}
+
+/* ---- format 4: flip-through reader (page-turning web zine — the digital twin of the print flow) ---- */
+// Same logical reading order the printed zine reads in: page 1 = cover, pages 2..N+1 =
+// images in chronological order. The mini-zine / booklet imposition only rearranges those
+// pages onto physical sheets; on screen we present them straight, so a reader flips through
+// in true reading order (verify with the page #s — they run 1..N as you turn). Reuses the
+// same coverBlock/metaRows/imgURL as the print formats, so /api/zine and the self-contained
+// inlineZine() export (fonts + /library-print images → data: URIs) both handle it unchanged.
+function buildFlipZine(list, title, nums){
+  const num=n=>nums?'<span class="pnum">'+n+'</span>':'';
+  const leaf=inner=>'<div class="leaf">'+inner+'</div>';
+  const cover=leaf(num(1)+'<div class="fp fp-cover">'+coverBlock(title,list)+'</div>');
+  const pages=list.map((it,i)=>leaf(num(i+2)+
+    '<div class="fp"><div class="fp-img"><img src="'+imgURL(it)+'" alt=""></div>'+
+    '<div class="fp-meta"><div class="zname">'+esc(it.name)+'</div>'+
+    (it.description?'<div class="zdesc">'+esc(it.description)+'</div>':'')+metaRows(it)+'</div></div>')).join("");
+  const N=list.length+1;
+  const css=
+    '.fb-stage{position:fixed;inset:0;background:#3f3f3f;display:flex;align-items:center;justify-content:center;overflow:hidden;-webkit-user-select:none;user-select:none;}'+
+    '.flipbook{position:relative;height:min(88vh,calc(94vw*1.294));aspect-ratio:1/1.294;perspective:2600px;}'+
+    '.leaf{position:absolute;inset:0;transform-origin:left center;transition:transform .6s cubic-bezier(.33,.05,.2,1);backface-visibility:hidden;background:#fff;box-shadow:0 18px 50px rgba(0,0,0,.42);cursor:pointer;container-type:inline-size;overflow:hidden;}'+
+    '.leaf.flipped{transform:rotateY(-180deg);}'+
+    '.leaf .pnum{color:#c9c9c9;}'+
+    '.fp{width:100%;height:100%;padding:8cqw;display:flex;flex-direction:column;}'+
+    '.fp-img{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;border:1px solid var(--line);}'+
+    '.fp-img img{max-width:100%;max-height:100%;object-fit:contain;display:block;}'+
+    '.fp-meta{padding-top:5cqw;}'+
+    '.leaf .zname{font-size:5.8cqw;}.leaf .zdesc{font-size:3.1cqw;line-height:1.5;margin-top:1.6cqw;}'+
+    '.leaf .zrows{margin-top:3.6cqw;gap:1.8cqw;}.leaf .zrow{gap:3cqw;padding-top:1.8cqw;}'+
+    '.leaf .zlab{font-size:2cqw;width:24cqw;}.leaf .zval{font-size:2.5cqw;}'+
+    '.leaf .zpals{gap:2.5cqw;}.leaf .zsw{width:3.6cqw;height:3.6cqw;}.leaf .zhex{font-size:2cqw;}'+
+    '.fp-cover{justify-content:space-between;}.fp-cover .cv-main{margin:auto 0;}'+
+    '.leaf .cv-brand{font-size:2.4cqw;}.leaf .cv-place{font-size:15cqw;}.leaf .cv-dates{font-size:5cqw;margin-top:2.6cqw;}.leaf .cv-foot{font-size:2.2cqw;}'+
+    '.fb-ui{position:fixed;left:0;right:0;bottom:22px;display:flex;align-items:center;justify-content:center;gap:18px;z-index:50;font-family:var(--sans);}'+
+    '.fb-nav{background:rgba(255,255,255,.94);border:none;width:44px;height:44px;border-radius:50%;font-size:19px;line-height:1;cursor:pointer;color:#1a1a1a;box-shadow:0 2px 12px rgba(0,0,0,.32);}'+
+    '.fb-nav:disabled{opacity:.35;cursor:default;}'+
+    '.fb-cnt{color:#fff;font-size:12px;letter-spacing:.12em;min-width:58px;text-align:center;font-variant-numeric:tabular-nums;}'+
+    '.fb-hint{position:fixed;top:20px;left:0;right:0;text-align:center;color:rgba(255,255,255,.7);font-family:var(--sans);font-size:11.5px;letter-spacing:.08em;text-transform:lowercase;z-index:50;pointer-events:none;transition:opacity .5s;}'+
+    // print / save-as-pdf fallback: lay every leaf out flat in reading order
+    '@media print{.fb-ui,.fb-hint{display:none;}.fb-stage{position:static;display:block;background:#fff;overflow:visible;}.flipbook{height:auto;aspect-ratio:auto;perspective:none;}'+
+    '.leaf{position:relative !important;transform:none !important;box-shadow:none;backface-visibility:visible;height:auto;aspect-ratio:1/1.294;page-break-after:always;}}';
+  const body='<div class="fb-stage"><div class="flipbook" id="fb">'+cover+pages+'</div></div>'+
+    '<div class="fb-hint" id="fbHint">click the page or press → to turn</div>'+
+    '<div class="fb-ui"><button class="fb-nav" id="fbPrev" aria-label="previous">‹</button>'+
+    '<span class="fb-cnt" id="fbCnt"></span>'+
+    '<button class="fb-nav" id="fbNext" aria-label="next">›</button></div>';
+  const script='<script>(function(){'+
+    'var fb=document.getElementById("fb"),ls=[].slice.call(fb.querySelectorAll(".leaf")),N=ls.length,cur=0,'+
+    'cnt=document.getElementById("fbCnt"),hint=document.getElementById("fbHint"),'+
+    'pv=document.getElementById("fbPrev"),nx=document.getElementById("fbNext");'+
+    // flipped leaves ride above (z 1000+i) so a turning page animates on top of the one it reveals;
+    // both are swept left / backface-hidden once flat, so what you read is always leaf `cur`.
+    'function lay(){for(var i=0;i<N;i++){var f=i<cur;ls[i].classList.toggle("flipped",f);ls[i].style.zIndex=f?1000+i:1000-i;}'+
+    'cnt.textContent=(cur+1)+" / "+N;pv.disabled=cur===0;nx.disabled=cur===N-1;if(hint&&cur>0)hint.style.opacity=0;}'+
+    'function go(n){n=Math.max(0,Math.min(N-1,n));if(n!==cur){cur=n;lay();}}'+
+    'fb.addEventListener("click",function(e){var r=fb.getBoundingClientRect();go(cur+((e.clientX-r.left)/r.width<0.32?-1:1));});'+
+    'pv.addEventListener("click",function(){go(cur-1);});nx.addEventListener("click",function(){go(cur+1);});'+
+    'addEventListener("keydown",function(e){var k=e.key;if(k==="ArrowRight"||k===" "||k==="PageDown"){e.preventDefault();go(cur+1);}'+
+    'else if(k==="ArrowLeft"||k==="PageUp"){e.preventDefault();go(cur-1);}else if(k==="Home")go(0);else if(k==="End")go(N-1);});'+
+    'lay();'+
+    '})();<\/script>';
+  return doc(title, css, body+script);
 }
 
 /* ---------- init ---------- */
