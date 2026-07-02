@@ -230,6 +230,7 @@
   <input class="zt-title" id="ztTitle" placeholder="cover title…" autocomplete="off" spellcheck="false">
   <label class="zt-check"><input type="checkbox" id="ztNums" checked> page #s</label>
   <button class="zt-create" id="ztCreate" disabled>create zine →</button>
+  <button class="zt-create" id="ztShare" disabled>save .html →</button>
   <span class="zt-link" id="ztBoard">make board</span>
   <span class="zt-link" id="ztCancel">cancel</span>
 </div>
@@ -1263,6 +1264,7 @@ const zineToolbar=document.getElementById("zineToolbar");
 const ztCount=document.getElementById("ztCount");
 const ztTitle=document.getElementById("ztTitle");
 const ztCreate=document.getElementById("ztCreate");
+const ztShare=document.getElementById("ztShare");
 
 function enterSelect(){
   selecting=true; document.body.classList.add("selecting");
@@ -1278,6 +1280,7 @@ function exitSelect(){
 function updateZineCount(){
   const n=selectedIds.size;
   ztCreate.disabled=n===0;
+  ztShare.disabled=n===0;
   if(n===0){ ztCount.textContent="select images"; ztCount.classList.remove("warn"); return; }
   let txt, warn=false;
   if(zineFormat==="mini"){
@@ -1315,6 +1318,7 @@ document.getElementById("ztAll").addEventListener("click", ()=>{
   updateZineCount();
 });
 ztCreate.addEventListener("click", createZine);
+ztShare.addEventListener("click", shareZine);
 document.getElementById("ztBoard").addEventListener("click", async ()=>{
   const ids=[...selectedIds];
   if(!ids.length) return;
@@ -1352,9 +1356,11 @@ const PAPER={
   letter:{ portrait:[215.9,279.4], landscape:[279.4,215.9], css:"letter" }
 };
 
-function createZine(){
-  let chosen=items.filter(it=>it.status==="ready" && selectedIds.has(it.id));
-  if(!chosen.length) return;
+// Build the zine HTML for the current selection + format. Shared by "create zine" (print/open)
+// and "save .html" (self-contained download) so both use the exact same imposition/page order.
+function buildZineHTML(){
+  const chosen=items.filter(it=>it.status==="ready" && selectedIds.has(it.id));
+  if(!chosen.length) return null;
   chosen.sort((a,b)=>(a.date||"9999").localeCompare(b.date||"9999"));   // chronological trip flow
   const title=ztTitle.value.trim() || (activeFolder && activeFolder!==UNSORTED ? activeFolder : "Field Notes");
   const nums=document.getElementById("ztNums").checked;
@@ -1366,9 +1372,14 @@ function createZine(){
   } else {
     html=buildPagesZine(chosen, title, "letter");
   }
+  return {html, title};
+}
+function createZine(){
+  const z=buildZineHTML();
+  if(!z) return;
   // Build, then open the zine in its own chromeless Chrome app window (not a browser tab).
   ztCount.textContent="building zine…";
-  fetch("/api/zine",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({html:html,title:title})})
+  fetch("/api/zine",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({html:z.html,title:z.title})})
     .then(r=>r.json())
     .then(j=>{
       if(!j||!j.id) throw new Error("no id");
@@ -1378,6 +1389,23 @@ function createZine(){
     })
     .then(()=>updateZineCount())
     .catch(()=>{ ztCount.textContent="couldn’t build — try again"; });
+}
+// Package the same zine as one self-contained .html file (images + fonts inlined as data: URIs)
+// and download it — small enough to text/email, opens offline anywhere, nothing uploaded.
+function shareZine(){
+  const z=buildZineHTML();
+  if(!z) return;
+  ztCount.textContent="packaging .html…";
+  fetch("/api/zine-file",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({html:z.html,title:z.title})})
+    .then(r=>{ if(!r.ok) throw new Error("bad"); return r.blob(); })
+    .then(blob=>{
+      const name=(z.title.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,60)||"field-notes")+".html";
+      const url=URL.createObjectURL(blob), a=document.createElement("a");
+      a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url),1000);
+      ztCount.textContent="saved "+name;
+    })
+    .catch(()=>{ ztCount.textContent="couldn’t package — try again"; });
 }
 
 /* ---- shared building blocks ---- */

@@ -500,6 +500,59 @@ function serveFile(res, filePath) {
   });
 }
 
+// Downscaled JPEG copy of a library image (cached per width). Returns a path to read,
+// or the original if sips is missing (degrade, don't throw), or null if the file's gone.
+// Shared by the /library-print route and the self-contained zine export.
+async function printCopy(name, w) {
+  const src = path.join(LIB_DIR, name);
+  if (!fs.existsSync(src)) return null;
+  if (!(w >= 200 && w <= 3000)) w = 1200;
+  const cached = path.join(CACHE_DIR, "print_" + name + "_" + w + ".jpg");
+  if (!fs.existsSync(cached)) {
+    try { await runSips(["-Z", String(w), "-s", "format", "jpeg", src, "--out", cached]); }
+    catch (e) { return src; }
+  }
+  return cached;
+}
+
+// Width of the baked-in images in a shareable .html zine. Small enough to text/email
+// (the file inlines every image as a data: URI) while staying crisp on a phone/laptop.
+const ZINE_EXPORT_W = 1000;
+
+// Turn a built zine (which references /fonts/fonts.css and /library-print/<file> URLs) into
+// a single self-contained document: fonts + downscaled images inlined as data: URIs, no
+// http(s) or root-relative references left, so it opens offline by double-click.
+async function inlineZine(html) {
+  // fonts: swap the stylesheet <link> for an inline <style> with each woff2 as a data: URI
+  let fontCss = "";
+  try {
+    fontCss = fs.readFileSync(path.join(ROOT, "fonts", "fonts.css"), "utf8")
+      .replace(/url\(\/fonts\/([^)]+)\)/g, (m, f) => {
+        try {
+          const bytes = fs.readFileSync(path.join(ROOT, "fonts", path.basename(f)));
+          return "url(data:font/woff2;base64," + bytes.toString("base64") + ")";
+        } catch (e) { return m; }   // missing font file: leave the url, don't break the sheet
+      });
+  } catch (e) {}
+  html = html.replace(/<link rel="stylesheet" href="\/fonts\/fonts\.css">/g,
+    fontCss ? "<style>" + fontCss + "</style>" : "");
+
+  // images: collect every /library-print/<file> reference (absolute or root-relative),
+  // render each once at ZINE_EXPORT_W, and swap in a JPEG data: URI.
+  const re = /(?:https?:\/\/[^/"']+)?\/library-print\/([^"'?]+)(?:\?[^"']*)?/g;
+  const files = [], seen = {};
+  let m;
+  while ((m = re.exec(html))) { const f = decodeURIComponent(m[1]); if (!seen[f]) { seen[f] = 1; files.push(f); } }
+  const uri = {};
+  for (const f of files) {
+    const fp = await printCopy(path.basename(f), ZINE_EXPORT_W);
+    if (!fp) continue;
+    const mt = /\.png$/i.test(fp) ? "image/png" : /\.webp$/i.test(fp) ? "image/webp" : "image/jpeg";
+    try { uri[f] = "data:" + mt + ";base64," + fs.readFileSync(fp).toString("base64"); } catch (e) {}
+  }
+  return html.replace(re, (full, f) => uri[decodeURIComponent(f)] || full);
+}
+
 /* ---------------- routes ---------------- */
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
@@ -552,16 +605,10 @@ const server = http.createServer(async (req, res) => {
     // Avoids loading the multi-megapixel originals just to show a small thumbnail.
     if (req.method === "GET" && p.startsWith("/library-print/")) {
       const name = path.basename(decodeURIComponent(p.slice("/library-print/".length)));
-      const src = path.join(LIB_DIR, name);
-      if (!fs.existsSync(src)) { res.writeHead(404); return res.end("not found"); }
-      let w = parseInt(url.searchParams.get("w") || "1200", 10);
-      if (!(w >= 200 && w <= 3000)) w = 1200;
-      const cached = path.join(CACHE_DIR, "print_" + name + "_" + w + ".jpg");
-      if (!fs.existsSync(cached)) {
-        try { await runSips(["-Z", String(w), "-s", "format", "jpeg", src, "--out", cached]); }
-        catch (e) { return serveFile(res, src); }          // sips missing: fall back to original
-      }
-      return serveFile(res, cached);
+      const w = parseInt(url.searchParams.get("w") || "1200", 10);
+      const fp = await printCopy(name, w);
+      if (!fp) { res.writeHead(404); return res.end("not found"); }
+      return serveFile(res, fp);
     }
 
     // GET /api/library -> all items
@@ -632,6 +679,22 @@ const server = http.createServer(async (req, res) => {
       const ids = Object.keys(zineStore);
       while (ids.length > 20) delete zineStore[ids.shift()];
       return json(res, 200, { id });
+    }
+
+    // POST /api/zine-file -> { html, title } : the same built zine, packaged as ONE
+    // self-contained .html download (fonts + downscaled images inlined as data: URIs).
+    // Small enough to text/email; opens offline by double-click, nothing uploaded.
+    if (req.method === "POST" && p === "/api/zine-file") {
+      const b = await body(req);
+      if (!b || typeof b.html !== "string" || b.html.length > 5000000) return json(res, 400, { error: "bad zine" });
+      const html = await inlineZine(b.html);
+      const base = (((typeof b.title === "string" && b.title) || "field notes")
+        .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60)) || "field-notes";
+      res.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "content-disposition": 'attachment; filename="' + base + '.html"'
+      });
+      return res.end(html);
     }
 
     // POST /api/backfill -> fill missing trip/date on existing items from their image EXIF.
