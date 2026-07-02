@@ -11,6 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Field Notes">
 <link rel="stylesheet" href="/fonts/fonts.css">
+<link rel="stylesheet" href="/lib/leaflet.css">
 <style>
   :root{
     --bg:#FFFFFF;--ink:#1A1A1A;--ink-2:#444444;--gray:#666666;--line:#E5E5E5;
@@ -159,6 +160,29 @@
   .board-picker img{width:100%;cursor:pointer;border:1px solid var(--line);}
   .board-picker img:hover{outline:2px solid var(--ink);}
 
+  /* map view */
+  #mapStart{right:280px;}
+  .map-overlay{display:none;position:fixed;inset:0;background:var(--bg);z-index:50;flex-direction:column;}
+  .map-overlay.open{display:flex;}
+  .map-bar{display:flex;align-items:center;gap:22px;padding:16px 24px;border-bottom:1px solid var(--line);}
+  .map-bar .map-title{font-family:var(--serif);font-size:20px;color:var(--ink);}
+  .map-bar .map-count{font-family:var(--sans);font-size:11.5px;text-transform:lowercase;letter-spacing:.04em;color:var(--gray);}
+  .map-bar .map-close{margin-left:auto;}
+  /* neutral paper field shows through if tiles fail to load (offline) — pins stay visible */
+  .map-stage{flex:1;position:relative;background:#EDEBE6;}
+  #mapCanvas{position:absolute;inset:0;}
+  .map-empty,.map-note{position:absolute;left:50%;transform:translateX(-50%);font-family:var(--sans);font-size:12px;letter-spacing:.03em;color:var(--gray);text-align:center;z-index:500;pointer-events:none;}
+  .map-empty{top:50%;transform:translate(-50%,-50%);max-width:280px;line-height:1.6;}
+  .map-note{bottom:12px;background:rgba(255,255,255,.9);border:1px solid var(--line);padding:6px 12px;}
+  /* photo pins: a small thumbnail dot on the map */
+  .map-pin{width:44px;height:44px;border:2px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.4);background-size:cover;background-position:center;background-color:#ccc;cursor:pointer;border-radius:3px;transition:transform .1s ease;}
+  .map-pin:hover{transform:scale(1.12);z-index:1000;}
+  .leaflet-popup-content{margin:8px 10px;font-family:var(--sans);}
+  .map-pop{cursor:pointer;text-align:center;width:120px;}
+  .map-pop img{width:120px;height:90px;object-fit:cover;display:block;border:1px solid var(--line);}
+  .map-pop .map-pop-name{font-family:var(--serif);font-size:14px;color:var(--ink);margin-top:6px;line-height:1.3;}
+  .map-pop .map-pop-place{font-family:var(--sans);font-size:10.5px;text-transform:lowercase;letter-spacing:.04em;color:var(--gray);margin-top:2px;}
+
   /* select mode */
   body.selecting .dropzone{display:none;}
   .card.selected{outline:2px solid var(--ink);outline-offset:-1px;}
@@ -194,6 +218,7 @@
     <div class="subtitle">a reference notebook for designers</div>
     <button class="zine-start" id="zineStart">make a zine →</button>
     <button class="zine-start" id="boardStart">make a board →</button>
+    <button class="zine-start" id="mapStart">on the map →</button>
   </header>
 
   <div class="dropzone" id="dropzone">
@@ -272,7 +297,21 @@
   </div>
 </div>
 
+<div class="map-overlay" id="mapOverlay">
+  <div class="map-bar">
+    <span class="map-title">on the map</span>
+    <span class="map-count" id="mapCount"></span>
+    <span class="board-link map-close" id="mapClose">close</span>
+  </div>
+  <div class="map-stage" id="mapStage">
+    <div id="mapCanvas"></div>
+    <div class="map-empty" id="mapEmpty" style="display:none;"></div>
+    <div class="map-note" id="mapNote" style="display:none;"></div>
+  </div>
+</div>
+
 <script src="/lib/fabric.min.js"></script>
+<script src="/lib/leaflet.js"></script>
 <script>
 "use strict";
 
@@ -1210,6 +1249,7 @@ overlay.addEventListener("click", e=>{ if(e.target===overlay) closeModal(); });
 document.addEventListener("keydown", e=>{
   if(e.key!=="Escape") return;
   if(overlay.classList.contains("open")) closeModal();
+  else if(document.getElementById("mapOverlay").classList.contains("open")) closeMap();
   else if(selecting) exitSelect();
 });
 document.addEventListener("keydown", e=>{
@@ -1301,6 +1341,62 @@ function toggleSelect(id, card){
 document.getElementById("zineStart").addEventListener("click", enterSelect);
 document.getElementById("boardStart").addEventListener("click",()=>openBoard(null));
 document.getElementById("boardClose").addEventListener("click",closeBoard);
+
+/* ---------- map view: pin every GPS-tagged reference where it was shot ---------- */
+// Tiles are fetched from OpenStreetMap at runtime (same spirit as the Nominatim
+// geocode call). If they fail — offline, or OSM unreachable — the neutral stage
+// colour shows through the empty tiles and pins still render, so the map degrades
+// to "pins on a plain field" instead of looking broken.
+let lmap=null;
+function openMap(){
+  document.getElementById("mapOverlay").classList.add("open");
+  if(!lmap){
+    lmap=L.map("mapCanvas",{worldCopyJump:true,attributionControl:true}).setView([20,0],2);
+    const tiles=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      {maxZoom:19,attribution:"© OpenStreetMap contributors"});
+    let noted=false;
+    tiles.on("tileerror",()=>{ if(noted) return; noted=true;
+      const n=document.getElementById("mapNote");
+      n.textContent="map tiles unavailable — showing pins on a plain field"; n.style.display="block"; });
+    tiles.addTo(lmap);
+    lmap._pins=L.layerGroup().addTo(lmap);
+  }
+  // The container was display:none until now, so Leaflet mis-measured it — fix on show.
+  setTimeout(()=>{ lmap.invalidateSize(); renderMapPins(); },0);
+}
+function closeMap(){ document.getElementById("mapOverlay").classList.remove("open"); }
+function renderMapPins(){
+  const pins=lmap._pins; pins.clearLayers();
+  const gps=items.filter(it=>it.status==="ready" && Number.isFinite(it.lat) && Number.isFinite(it.lon));
+  const empty=document.getElementById("mapEmpty");
+  document.getElementById("mapCount").textContent = gps.length ? (gps.length+(gps.length===1?" pin":" pins")) : "";
+  if(!gps.length){
+    empty.style.display="block";
+    empty.textContent = items.length ? "no references carry GPS coordinates yet — a photo needs EXIF location to appear here" : "nothing collected yet";
+    return;
+  }
+  empty.style.display="none";
+  const bounds=[];
+  gps.forEach(it=>{
+    const thumb="/library-print/"+encodeURIComponent(it.file);
+    const icon=L.divIcon({className:"",iconSize:[44,44],iconAnchor:[22,22],popupAnchor:[0,-24],
+      html:'<div class="map-pin" style="background-image:url(\''+thumb+'?w=88\')"></div>'});
+    const m=L.marker([it.lat,it.lon],{icon}).addTo(pins);
+    // Build the popup as a DOM node (not an HTML string) so names/places can't inject markup.
+    const pop=document.createElement("div"); pop.className="map-pop";
+    const img=document.createElement("img"); img.src=thumb+"?w=240"; img.alt=""; pop.appendChild(img);
+    const nm=document.createElement("div"); nm.className="map-pop-name"; nm.textContent=it.name||"untitled"; pop.appendChild(nm);
+    const place=(it.folder||"").trim();
+    if(place){ const pl=document.createElement("div"); pl.className="map-pop-place"; pl.textContent=place; pop.appendChild(pl); }
+    pop.addEventListener("click",()=>{ closeMap(); openModal(it.id); });
+    m.bindPopup(pop);
+    bounds.push([it.lat,it.lon]);
+  });
+  if(bounds.length===1) lmap.setView(bounds[0],12);
+  else lmap.fitBounds(bounds,{padding:[60,60],maxZoom:14});
+}
+document.getElementById("mapStart").addEventListener("click",openMap);
+document.getElementById("mapClose").addEventListener("click",closeMap);
 document.getElementById("ztCancel").addEventListener("click", exitSelect);
 document.getElementById("ztClear").addEventListener("click", ()=>{
   selectedIds.clear();
@@ -1561,9 +1657,9 @@ async function init(){
   }catch(e){ items=[]; }
   render();
   loadBoards();
-  // safety net: any item missing a date hasn't been scanned for location/date yet.
-  // Backfill in the background (non-blocking), then refresh once.
-  if(items.some(it=>it.date===undefined)){
+  // safety net: an item missing a date (or coords, for records predating the map
+  // view) hasn't been scanned for location/date yet. Backfill in the background.
+  if(items.some(it=>it.date===undefined || it.lat===undefined)){
     fetch("/api/backfill",{method:"POST"})
       .then(()=>fetch("/api/library")).then(r=>r.json())
       .then(data=>{ items = mapLib(data); render(); })
