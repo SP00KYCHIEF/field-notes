@@ -184,6 +184,28 @@
   .map-pop .map-pop-name{font-family:var(--serif);font-size:14px;color:var(--ink);margin-top:6px;line-height:1.3;}
   .map-pop .map-pop-place{font-family:var(--sans);font-size:10.5px;text-transform:lowercase;letter-spacing:.04em;color:var(--gray);margin-top:2px;}
 
+  /* ambient slideshow */
+  .slide-overlay{display:none;position:fixed;inset:0;background:#0b0b0c;z-index:70;transition:background-color 1.4s ease;cursor:none;}
+  .slide-overlay.open{display:block;}
+  .slide-overlay.controls{cursor:default;}
+  .slide-layer{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity 1s ease;}
+  .slide-layer.show{opacity:1;}
+  .slide-layer img{max-width:88vw;max-height:84vh;object-fit:contain;box-shadow:0 12px 64px rgba(0,0,0,.5);}
+  .slide-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#cfcfcf;font-family:var(--serif);font-style:italic;font-size:20px;text-align:center;padding:0 24px;}
+  .slide-prog{position:absolute;top:0;left:0;height:2px;width:0;background:rgba(255,255,255,.85);z-index:3;}
+  .slide-nav{position:absolute;top:0;bottom:0;width:24%;z-index:2;cursor:pointer;}
+  .slide-nav.prev{left:0;} .slide-nav.next{right:0;}
+  .slide-bar{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:16px;padding:16px 22px;z-index:4;color:#fff;background:linear-gradient(to bottom,rgba(0,0,0,.5),transparent);opacity:0;transition:opacity .4s ease;pointer-events:none;}
+  .slide-overlay.controls .slide-bar{opacity:1;pointer-events:auto;}
+  .slide-btn{font-family:var(--sans);font-size:12px;text-transform:lowercase;letter-spacing:.06em;color:#fff;background:none;border:1px solid rgba(255,255,255,.4);padding:7px 13px;cursor:pointer;transition:border-color .15s ease;}
+  .slide-btn:hover{border-color:#fff;}
+  .slide-count{font-family:var(--sans);font-size:11px;letter-spacing:.08em;opacity:.8;}
+  .slide-bar .spacer{margin-left:auto;}
+  .slide-cap{position:absolute;left:0;right:0;bottom:0;z-index:4;padding:30px 24px 34px;text-align:center;color:#fff;background:linear-gradient(to top,rgba(0,0,0,.55),transparent);opacity:0;transition:opacity .4s ease;pointer-events:none;}
+  .slide-overlay.controls .slide-cap{opacity:1;}
+  .slide-cap .sc-name{font-family:var(--serif);font-style:italic;font-size:26px;letter-spacing:.01em;}
+  .slide-cap .sc-meta{font-family:var(--sans);font-size:11px;text-transform:lowercase;letter-spacing:.1em;margin-top:7px;opacity:.85;}
+
   /* field report — "a year in color": chronological palette ribbons built from stored colors+date */
   .report-overlay{display:none;position:fixed;inset:0;background:var(--bg);z-index:50;flex-direction:column;}
   .report-overlay.open{display:flex;}
@@ -322,6 +344,7 @@
       <button class="zine-start" id="pivotStart">pivot →</button>
       <button class="zine-start" id="reportStart">field report →</button>
       <button class="zine-start" id="surpriseStart">surprise me →</button>
+      <button class="zine-start" id="slideStart">slideshow →</button>
     </div>
   </header>
 
@@ -359,6 +382,7 @@
   </span>
   <input class="zt-title" id="ztTitle" placeholder="cover title…" autocomplete="off" spellcheck="false">
   <label class="zt-check"><input type="checkbox" id="ztNums" checked> page #s</label>
+  <label class="zt-check" title="embed a QR on the cover that opens the flip-through web version"><input type="checkbox" id="ztQR" checked> qr to digital</label>
   <button class="zt-create" id="ztCreate" disabled>create zine →</button>
   <button class="zt-create" id="ztShare" disabled>save .html →</button>
   <span class="zt-link" id="ztBoard">make board</span>
@@ -417,6 +441,24 @@
   </div>
 </div>
 
+<div class="slide-overlay" id="slideOverlay">
+  <div class="slide-prog" id="slideProg"></div>
+  <div class="slide-layer" id="slideA"><img alt=""></div>
+  <div class="slide-layer" id="slideB"><img alt=""></div>
+  <div class="slide-empty" id="slideEmpty" style="display:none;"></div>
+  <div class="slide-nav prev" id="slidePrevZone" title="previous"></div>
+  <div class="slide-nav next" id="slideNextZone" title="next"></div>
+  <div class="slide-bar">
+    <button class="slide-btn" id="slidePlay">pause</button>
+    <button class="slide-btn" id="slidePrev">‹ prev</button>
+    <button class="slide-btn" id="slideNext">next ›</button>
+    <span class="slide-count" id="slideCount"></span>
+    <span class="spacer"></span>
+    <button class="slide-btn" id="slideClose">close (esc)</button>
+  </div>
+  <div class="slide-cap" id="slideCap"></div>
+</div>
+
 <div class="report-overlay" id="reportOverlay">
   <div class="report-bar">
     <span class="report-title">a year in color</span>
@@ -455,6 +497,7 @@
 
 <script src="/lib/fabric.min.js"></script>
 <script src="/lib/leaflet.js"></script>
+<script src="/lib/qrcode.js"></script>
 <script>
 "use strict";
 
@@ -1571,6 +1614,93 @@ function renderMapPins(){
 document.getElementById("mapStart").addEventListener("click",openMap);
 document.getElementById("mapClose").addEventListener("click",closeMap);
 
+/* ---------- ambient slideshow: a calm, auto-advancing fullscreen display ---------- */
+// Plays the current selection if any, else whatever the filters/trip currently show,
+// in chronological order. Background eases toward each image's dominant colour.
+const SLIDE_MS=6000;
+let slideList=[], slideIdx=0, slidePlaying=true, slideTimer=null, slideIdleTimer=null, slideTopLayer=null;
+function slideSource(){
+  const base=(selecting && selectedIds.size)
+    ? items.filter(it=>it.status==="ready" && selectedIds.has(it.id))
+    : items.filter(it=>it.status==="ready" && matches(it));
+  return base.slice().sort((a,b)=>(a.date||"9999").localeCompare(b.date||"9999"));
+}
+function hexToRgb(h){ h=(""+(h||"")).replace("#",""); if(h.length===3)h=h.split("").map(c=>c+c).join(""); const n=parseInt(h,16); return (h.length===6&&!isNaN(n))?[(n>>16)&255,(n>>8)&255,n&255]:null; }
+// A dark tint of the image's dominant colour — enough hue to feel palette-aware, dim enough to stay calm.
+function slideBg(it){ const rgb=hexToRgb((it.colors||[])[0])||[16,16,18], k=0.24, base=[11,11,12];
+  return "rgb("+rgb.map((v,i)=>Math.round(v*k+base[i]*(1-k))).join(",")+")"; }
+function slideShow(i){
+  if(!slideList.length) return;
+  slideIdx=(i+slideList.length)%slideList.length;
+  const it=slideList[slideIdx];
+  const next=(slideTopLayer&&slideTopLayer.id==="slideA")?document.getElementById("slideB"):document.getElementById("slideA");
+  const img=next.querySelector("img");
+  img.onload=()=>{ next.classList.add("show"); if(slideTopLayer&&slideTopLayer!==next) slideTopLayer.classList.remove("show"); slideTopLayer=next; };
+  img.src=imgSrc(it,1600);
+  document.getElementById("slideOverlay").style.backgroundColor=slideBg(it);
+  const cap=document.getElementById("slideCap");
+  const meta=[it.folder&&esc(it.folder), fmtDate(it.date,true)].filter(Boolean).join(" · ");
+  cap.innerHTML='<div class="sc-name">'+esc(it.name||"untitled")+'</div>'+(meta?'<div class="sc-meta">'+meta+'</div>':'');
+  document.getElementById("slideCount").textContent=(slideIdx+1)+" / "+slideList.length;
+  slideRestartProgress();
+}
+// Reset the top progress bar, then (if playing) animate it across the dwell time.
+function slideRestartProgress(){
+  const p=document.getElementById("slideProg");
+  p.style.transition="none"; p.style.width="0%"; void p.offsetWidth;   // reflow so the reset takes before we animate
+  if(slidePlaying){ p.style.transition="width "+SLIDE_MS+"ms linear"; p.style.width="100%"; }
+}
+function slideStartTimer(){ clearTimeout(slideTimer); if(slidePlaying && slideList.length>1) slideTimer=setTimeout(()=>slideShow(slideIdx+1), SLIDE_MS); }
+function slideGo(d){ slideShow(slideIdx+d); slideStartTimer(); slidePoke(); }
+function slideSetPlaying(on){
+  slidePlaying=on; document.getElementById("slidePlay").textContent=on?"pause":"play";
+  if(on){ slideRestartProgress(); slideStartTimer(); }
+  else { clearTimeout(slideTimer); const p=document.getElementById("slideProg"); p.style.transition="none"; }   // freeze the bar where it is
+  slidePoke();
+}
+// Reveal the chrome on activity, then fade it (and the cursor) away for a calm ambient display.
+function slidePoke(){
+  const ov=document.getElementById("slideOverlay"); ov.classList.add("controls");
+  clearTimeout(slideIdleTimer); slideIdleTimer=setTimeout(()=>ov.classList.remove("controls"), 2800);
+}
+function openSlideshow(){
+  slideList=slideSource();
+  const ov=document.getElementById("slideOverlay"), empty=document.getElementById("slideEmpty");
+  document.getElementById("slideA").classList.remove("show"); document.getElementById("slideB").classList.remove("show");
+  slideTopLayer=null;
+  ov.classList.add("open");
+  if(!slideList.length){
+    empty.style.display="flex";
+    empty.textContent = items.length ? "nothing here to play — clear a filter or select some references" : "nothing collected yet";
+    ov.style.backgroundColor="#0b0b0c"; document.getElementById("slideCount").textContent=""; document.getElementById("slideCap").innerHTML="";
+    slidePoke(); return;
+  }
+  empty.style.display="none";
+  slideSetPlaying(true);
+  slideShow(0);
+  slideStartTimer();
+  slidePoke();
+}
+function closeSlideshow(){
+  document.getElementById("slideOverlay").classList.remove("open");
+  clearTimeout(slideTimer); clearTimeout(slideIdleTimer);
+}
+document.getElementById("slideStart").addEventListener("click",openSlideshow);
+document.getElementById("slideClose").addEventListener("click",closeSlideshow);
+document.getElementById("slidePlay").addEventListener("click",()=>slideSetPlaying(!slidePlaying));
+document.getElementById("slidePrev").addEventListener("click",()=>slideGo(-1));
+document.getElementById("slideNext").addEventListener("click",()=>slideGo(1));
+document.getElementById("slidePrevZone").addEventListener("click",()=>slideGo(-1));
+document.getElementById("slideNextZone").addEventListener("click",()=>slideGo(1));
+document.getElementById("slideOverlay").addEventListener("mousemove",slidePoke);
+document.addEventListener("keydown",e=>{
+  if(!document.getElementById("slideOverlay").classList.contains("open")) return;
+  if(e.key==="Escape"){ closeSlideshow(); }
+  else if(e.key==="ArrowRight"){ slideGo(1); }
+  else if(e.key==="ArrowLeft"){ slideGo(-1); }
+  else if(e.key===" "){ e.preventDefault(); slideSetPlaying(!slidePlaying); }
+});
+
 /* ---------- field report: "a year in color" — chronological palette ribbons ---------- */
 function openReport(){ document.getElementById("reportOverlay").classList.add("open"); renderReport(); }
 function closeReport(){ document.getElementById("reportOverlay").classList.remove("open"); }
@@ -1871,7 +2001,9 @@ const PAPER={
 
 // Build the zine HTML for the current selection + format. Shared by "create zine" (print/open)
 // and "save .html" (self-contained download) so both use the exact same imposition/page order.
-function buildZineHTML(){
+// `qr` (an inline <svg> string, optional) bakes a scan-to-open code onto the cover;
+// omitted for the self-contained .html export, whose QR would point at a dead LAN URL.
+function buildZineHTML(qr){
   const chosen=items.filter(it=>it.status==="ready" && selectedIds.has(it.id));
   if(!chosen.length) return null;
   chosen.sort((a,b)=>(a.date||"9999").localeCompare(b.date||"9999"));   // chronological trip flow
@@ -1879,22 +2011,43 @@ function buildZineHTML(){
   const nums=document.getElementById("ztNums").checked;
   let html;
   if(zineFormat==="mini"){
-    html=buildMiniZine(chosen.slice(0,7), title, nums, "letter");
+    html=buildMiniZine(chosen.slice(0,7), title, nums, "letter", qr);
   } else if(zineFormat==="booklet"){
-    html=buildBooklet(chosen, title, nums, "letter");
+    html=buildBooklet(chosen, title, nums, "letter", qr);
   } else if(zineFormat==="flip"){
     html=buildFlipZine(chosen, title, nums);
   } else {
-    html=buildPagesZine(chosen, title, "letter");
+    html=buildPagesZine(chosen, title, "letter", qr);
   }
   return {html, title};
 }
-function createZine(){
-  const z=buildZineHTML();
+// Encode a scannable QR (inline SVG, crisp at print DPI) linking the paper to its digital
+// twin at `url`. Returns "" if the vendored lib is missing or encode fails (degrade, no QR).
+function qrSvgFor(url){
+  try{
+    if(typeof qrcode!=="function" || !url) return "";
+    const qr=qrcode(0,"M");   // type 0 = auto-fit the QR version to the URL length
+    qr.addData(url); qr.make();
+    return qr.createSvgTag({cellSize:4,margin:1,scalable:true});
+  }catch(e){ return ""; }
+}
+async function createZine(){
+  // Reserve the id client-side so the QR we bake onto the cover matches the URL the
+  // server will serve the zine at. Host is best-effort (LAN IP so a phone can reach it);
+  // if either the host lookup or the encode fails we simply build without a QR.
+  const zid=(Date.now().toString(36)+Math.random().toString(36).slice(2,6)).replace(/[^a-z0-9]/gi,"").slice(0,24);
+  let qr="";
+  if(document.getElementById("ztQR").checked){
+    try{
+      const h=await fetch("/api/host").then(r=>r.json());
+      if(h && h.base) qr=qrSvgFor(h.base.replace(/\/+$/,"")+"/zine/"+zid);
+    }catch(e){}
+  }
+  const z=buildZineHTML(qr);
   if(!z) return;
   // Build, then open the zine in its own chromeless Chrome app window (not a browser tab).
   ztCount.textContent="building zine…";
-  fetch("/api/zine",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({html:z.html,title:z.title})})
+  fetch("/api/zine",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({html:z.html,title:z.title,id:zid})})
     .then(r=>r.json())
     .then(j=>{
       if(!j||!j.id) throw new Error("no id");
@@ -1946,7 +2099,10 @@ const BASE_CSS=
   '.cv-brand{font-family:var(--sans);text-transform:lowercase;letter-spacing:.2em;color:var(--gray);}'+
   '.cv-place{font-family:var(--serif);font-weight:500;line-height:1.02;letter-spacing:.01em;}'+
   '.cv-dates{font-family:var(--serif);font-style:italic;color:var(--gray);}'+
-  '.cv-foot{font-family:var(--sans);text-transform:lowercase;letter-spacing:.14em;color:var(--gray);}';
+  '.cv-foot{font-family:var(--sans);text-transform:lowercase;letter-spacing:.14em;color:var(--gray);}'+
+  '.cv-qr{display:flex;flex-direction:column;align-items:flex-start;gap:5px;}'+
+  '.cv-qr svg{display:block;width:100%;height:auto;background:#fff;}'+
+  '.cv-qr-cap{font-family:var(--sans);text-transform:lowercase;letter-spacing:.08em;color:var(--gray);}';
 function doc(title, css, body){
   return '<!doctype html><html lang="en"><head><meta charset="utf-8">'+
     '<title>'+esc(title)+' — field notes</title>'+
@@ -1967,18 +2123,20 @@ function metaRows(it){
     '<div class="zrow"><span class="zlab">location · date</span><span class="zval">'+loc+'</span></div>'+
   '</div>';
 }
-function coverBlock(title, list){
+function coverBlock(title, list, qr){
   const range=dateRange(list);
   return '<div class="cv-brand">field notes</div>'+
     '<div class="cv-main"><div class="cv-place">'+esc(title)+'</div>'+
       (range?'<div class="cv-dates">'+esc(range)+'</div>':'')+'</div>'+
+    (qr?'<div class="cv-qr">'+qr+'<span class="cv-qr-cap">scan to flip through</span></div>':'')+
     '<div class="cv-foot">'+list.length+' reference'+(list.length===1?'':'s')+'</div>';
 }
 
 /* ---- format 1: editorial pages (one per page) ---- */
-function buildPagesZine(list, title, paper){
+function buildPagesZine(list, title, paper, qr){
   const pg=PAPER[paper]||PAPER.a4;
   const css=
+    '.cover .cv-qr{width:30mm;margin:18px 0;}.cover .cv-qr-cap{font-size:9.5px;}'+
     '@page{size:'+pg.css+';margin:0;}'+
     '.page{width:'+pg.portrait[0]+'mm;height:'+pg.portrait[1]+'mm;padding:20mm;display:flex;flex-direction:column;overflow:hidden;page-break-after:always;background:#fff;}'+
     '.page:last-child{page-break-after:auto;}'+
@@ -1991,7 +2149,7 @@ function buildPagesZine(list, title, paper){
     '.zpals{gap:12px;}.zsw{width:18px;height:18px;}.zhex{font-size:10.5px;}'+
     '@media screen{body{background:#8c8c8c;}.book{padding:64px 0 40px;}.page{margin:0 auto 28px;box-shadow:0 4px 28px rgba(0,0,0,.28);}}'+
     '@media print{.bar{display:none;}.page{margin:0;box-shadow:none;}}';
-  const cover='<section class="page cover">'+coverBlock(title,list)+'</section>';
+  const cover='<section class="page cover">'+coverBlock(title,list,qr)+'</section>';
   const pages=list.map(it=>'<section class="page ref"><div class="ref-img"><img src="'+imgURL(it)+'" alt=""></div>'+
     '<div class="ref-meta"><div class="zname">'+esc(it.name)+'</div>'+
     (it.description?'<div class="zdesc">'+esc(it.description)+'</div>':'')+metaRows(it)+'</div></section>').join("");
@@ -2000,7 +2158,7 @@ function buildPagesZine(list, title, paper){
 }
 
 /* ---- format 2: one-sheet mini-zine (fold + 1 cut, PocketMod imposition) ---- */
-function buildMiniZine(list, title, nums, paper){
+function buildMiniZine(list, title, nums, paper, qr){
   const pg=PAPER[paper]||PAPER.a4;
   // book pages: 1=cover, 2..8 = images[0..6]
   const img=i=>list[i];
@@ -2012,7 +2170,7 @@ function buildMiniZine(list, title, nums, paper){
     return num(n)+'<div class="mp-img"><img src="'+imgURL(it)+'"></div>'+
       '<div class="mp-cap"><span class="mp-nm">'+cap+'</span><span class="mp-dots">'+dots+'</span></div>';
   };
-  const panelCover=(n)=>num(n)+'<div class="mp-cover">'+coverBlock(title,list)+'</div>';
+  const panelCover=(n)=>num(n)+'<div class="mp-cover">'+coverBlock(title,list,qr)+'</div>';
   const panel=(inner,flip)=>'<div class="panel'+(flip?' flip':'')+'">'+inner+'</div>';
   // grid row-major (T1..T4, B1..B4). Top row rotated 180.
   // T1=pg7(img5) T2=pg6(img4) T3=pg5(img3) T4=pg4(img2) | B1=pg8(img6) B2=pg1(cover) B3=pg2(img0) B4=pg3(img1)
@@ -2031,6 +2189,7 @@ function buildMiniZine(list, title, nums, paper){
     '.mp-cover{height:100%;padding:7pt;display:flex;flex-direction:column;justify-content:center;gap:3pt;}'+
     '.mp-cover .cv-brand{font-size:6.5pt;}.mp-cover .cv-main{margin:0;}.mp-cover .cv-place{font-size:19pt;}'+
     '.mp-cover .cv-dates{font-size:8.5pt;margin-top:3pt;}.mp-cover .cv-foot{font-size:6pt;margin-top:4pt;}'+
+    '.mp-cover .cv-qr{width:15mm;margin-top:4pt;}.mp-cover .cv-qr-cap{font-size:4.5pt;line-height:1.1;letter-spacing:.05em;}'+
     '.guide{font-family:var(--sans);font-size:12px;color:#2a2a2a;max-width:760px;margin:26px auto;line-height:1.65;}'+
     '.guide h3{font-size:12px;letter-spacing:.05em;text-transform:lowercase;margin:0 0 8px;}'+
     '.guide ol{margin:0;padding-left:18px;}.guide li{margin:5px 0;}'+
@@ -2049,7 +2208,7 @@ function buildMiniZine(list, title, nums, paper){
 }
 
 /* ---- format 3: saddle-stitch booklet (double-sided, fold in half) ---- */
-function buildBooklet(list, title, nums, paper){
+function buildBooklet(list, title, nums, paper, qr){
   const pg=PAPER[paper]||PAPER.a4;
   // reading pages: 1=cover, 2..(1+N)=images, padded to a multiple of 4
   let pages=[{cover:true}].concat(list.map(it=>({it:it})));
@@ -2058,7 +2217,7 @@ function buildBooklet(list, title, nums, paper){
   const num=n=>nums?'<span class="pnum">'+n+'</span>':'';
   const pageHTML=(pg,n)=>{
     if(!pg||pg.blank) return '<div class="bpage blank">'+num(n)+'</div>';
-    if(pg.cover) return '<div class="bpage bcover">'+num(n)+coverBlock(title,list)+'</div>';
+    if(pg.cover) return '<div class="bpage bcover">'+num(n)+coverBlock(title,list,qr)+'</div>';
     const it=pg.it;
     return '<div class="bpage">'+num(n)+'<div class="bp-img"><img src="'+imgURL(it)+'"></div>'+
       '<div class="bp-meta"><div class="zname">'+esc(it.name)+'</div>'+
@@ -2079,6 +2238,7 @@ function buildBooklet(list, title, nums, paper){
     '.bpage:last-child{border-right:none;}'+
     '.bcover{justify-content:space-between;}.bcover .cv-main{margin:auto 0;}'+
     '.cv-brand{font-size:10px;}.cv-place{font-size:48px;}.cv-dates{font-size:18px;margin-top:10px;}.cv-foot{font-size:9px;}'+
+    '.bcover .cv-qr{width:26mm;margin:14px 0;}.bcover .cv-qr-cap{font-size:8px;}'+
     '.bp-img{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;border:1px solid var(--line);}'+
     '.bp-img img{max-width:100%;max-height:100%;object-fit:contain;display:block;}'+
     '.bp-meta{padding-top:12px;}.zname{font-size:20px;}.zdesc{font-size:12px;line-height:1.45;margin-top:6px;}'+
